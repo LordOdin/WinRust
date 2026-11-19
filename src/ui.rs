@@ -1,5 +1,6 @@
 //! The window: drawing (GDI+ shapes, GDI text), layout, dialogs and the message loop handler.
 use crate::*;
+use i18n::style::appearance::Element;
 
 // ---------- drawing ----------
 //
@@ -70,11 +71,11 @@ impl Ui {
         DeleteObject(f);
     }
     unsafe fn text(&self, s: &str, b: Box4, size: f32, weight: i32, color: u32, flags: u32) {
-        self.text_in(s, b, size, weight, color, flags, "Segoe UI");
+        self.text_in(s, b, size, weight, color, flags, i18n::style::ui_face());
     }
     /// Width of a single line of text, logical px.
     unsafe fn width(&self, s: &str, size: f32, weight: i32) -> f32 {
-        let f = self.font(size, weight, "Segoe UI");
+        let f = self.font(size, weight, i18n::style::ui_face());
         let of = SelectObject(self.dc, f);
         let mut r: RECT = zeroed();
         DrawTextW(self.dc, wide(s).as_ptr(), -1, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
@@ -176,21 +177,21 @@ pub(crate) fn dialog_boxes(w: f32) -> (Box4, Box4, Box4) {
 
 /// A button: `kind` 0 = primary (accent), 1 = secondary (outline), 2 = danger (outline, red text), 3 = disabled.
 pub(crate) unsafe fn button(ui: &Ui, b: Box4, label: &str, kind: u8, hot: bool) {
-    let palette = i18n::style::pal();
+    let palette = i18n::style::appearance::installer_palette();
     let (fill, line, fg) = match kind {
-        0 => (palette.accent, palette.accent, rgb(255, 255, 255)),
+        0 => (palette.accent, palette.accent, Element::InstallOnAccent.color()),
         1 => (palette.active, palette.line, palette.text),
-        2 => (palette.active, palette.line, BAD),
+        2 => (palette.active, palette.line, Element::InstallBad.color()),
         _ => (palette.active, lerp(palette.active, palette.line, 0.6), lerp(palette.dim, palette.active, 0.35)),
     };
     let fill = if hot && kind != 3 { lerp(fill, palette.text, if kind == 0 { 0.14 } else { 0.07 }) } else { fill };
-    let line = if hot && kind == 2 { BAD } else if kind == 0 { fill } else { line };
+    let line = if hot && kind == 2 { Element::InstallBad.color() } else if kind == 0 { fill } else { line };
     ui.round(b, 8.0, fill, line);
     ui.text(label, b, 13.5, 600, fg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 pub(crate) unsafe fn paint(hwnd: HWND) {
-    let palette = i18n::style::pal();
+    let palette = i18n::style::appearance::installer_palette();
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
     let mut rc: RECT = zeroed();
@@ -222,7 +223,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     ui.round(logo, 16.0, palette.accent, palette.accent);
     let inner = lerp(palette.accent, palette.bg, 0.12);
     ui.round([logo[0] + 4.0, logo[1] + 4.0, logo[2] - 4.0, logo[3] - 4.0], 13.0, inner, inner);
-    ui.text("W", [logo[0], logo[1] - 2.0, logo[2], logo[3]], 32.0, 900, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    ui.text("W", [logo[0], logo[1] - 2.0, logo[2], logo[3]], 32.0, 900, Element::InstallOnAccent.color(), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     let tx = logo[2] + 18.0;
     ui.text("WinRust", [tx, 28.0, w - M, 64.0], 30.0, 700, palette.text, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     ui.text(&tf!("Оболочка Windows на Rust  \u{00B7}  установлено {n_inst} из {N_READY}", "A Windows shell in Rust  \u{00B7}  {n_inst} of {N_READY} installed"), [tx, 64.0, w - M, 88.0], 13.0, 400, palette.dim, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
@@ -251,7 +252,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let sel = SELECTED[i].load(Relaxed);
         ui.round(cb, 5.0, if sel { palette.accent } else { palette.active }, if sel { palette.accent } else { lerp(palette.line, palette.text, if hot(ID_CHECK + i) { 0.4 } else { 0.0 }) });
         if sel {
-            ui.text_in("\u{E73E}", cb, 11.0, 700, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
+            ui.text_in("\u{E73E}", cb, 11.0, 700, Element::InstallOnAccent.color(), DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
         }
         let tile = [r[0] + 42.0, r[1] + 13.0, r[0] + 78.0, r[1] + 49.0];
         let lit = installed || working;
@@ -262,7 +263,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let (pill, pc) = if working {
             (if job == n { t!("Удаление…", "Removing…") } else { t!("Установка…", "Installing…") }, palette.accent)
         } else if installed {
-            (t!("Установлен", "Installed"), GOOD)
+            (t!("Установлен", "Installed"), Element::InstallGood.color())
         } else if queued {
             (t!("В очереди", "Queued"), palette.dim)
         } else {
@@ -316,7 +317,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         } else {
             tf!("Доустановить и обновить WinRust  (новых: {})", "Install and update WinRust  ({} new)", N_READY - n_inst)
         };
-        let (fill, fg) = if all || n_sel == 0 { (palette.active, if n_sel == 0 { palette.dim } else { palette.text }) } else { (palette.accent, rgb(255, 255, 255)) };
+        let (fill, fg) = if all || n_sel == 0 { (palette.active, if n_sel == 0 { palette.dim } else { palette.text }) } else { (palette.accent, Element::InstallOnAccent.color()) };
         let fill = if hot(ID_MAIN) { lerp(fill, palette.text, if all { 0.07 } else { 0.14 }) } else { fill };
         ui.round(mb, 12.0, fill, if all { palette.line } else { fill });
         let tw = ui.width(&label, 16.0, 700);
@@ -334,9 +335,9 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     } else if m.is_empty() {
         (t!("Перед установкой создаётся точка восстановления.", "A restore point is created before installing.").into(), palette.dim, palette.dim)
     } else if ok {
-        (m, GOOD, palette.text)
+        (m, Element::InstallGood.color(), palette.text)
     } else {
-        (m, BAD, BAD)
+        (m, Element::InstallBad.color(), Element::InstallBad.color())
     };
     let rb = rollback_box(w);
     ui.shape([M, ft + FOOT_H / 2.0 - 4.0, M + 8.0, ft + FOOT_H / 2.0 + 4.0], 4.0, argb(dot, 255));
@@ -352,7 +353,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         ui.shape([0.0, 0.0, w, WIN_H + 1.0], 0.0, argb(0, 160));
         let (d, cancel, okb) = dialog_boxes(w);
         ui.round(d, 14.0, lerp(palette.active, palette.bg, 0.25), palette.line);
-        let accent = if danger { BAD } else { palette.accent };
+        let accent = if danger { Element::InstallBad.color() } else { palette.accent };
         let icon = [d[0] + 24.0, d[1] + 24.0, d[0] + 60.0, d[1] + 60.0];
         let tint = lerp(palette.active, accent, 0.18);
         ui.round(icon, 18.0, tint, tint);
@@ -362,7 +363,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         button(&ui, cancel, t!("Отмена", "Cancel"), 1, hot(ID_CANCEL));
         let okfill = if hot(ID_OK) { lerp(accent, palette.text, 0.14) } else { accent };
         ui.round(okb, 8.0, okfill, okfill);
-        ui.text(&ok_label, okb, 13.5, 600, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ui.text(&ok_label, okb, 13.5, 600, Element::InstallOnAccent.color(), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 
     // settings panel of a plugin (topbar: OneDrive switch)

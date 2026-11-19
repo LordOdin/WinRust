@@ -58,6 +58,8 @@ use windows_sys::Win32::{
     UI::{Input::KeyboardAndMouse::*, Shell::*, WindowsAndMessaging::*},
 };
 
+use winrust_common::style::appearance::Element;
+#[cfg(test)]
 use winrust_common::style::rgb;
 /// A corner radius in logical px, 0 in the square styles.
 fn rr(v: i32) -> i32 {
@@ -65,9 +67,6 @@ fn rr(v: i32) -> i32 {
 }
 fn at_top() -> bool { edge::current() == ABE_TOP }
 fn dock_gap() -> i32 { if settings::preferences().dock { sc(8) } else { 0 } }
-const GOOD: u32 = rgb(108, 203, 95);
-const BAD: u32 = rgb(255, 99, 97);
-const WARN: u32 = rgb(255, 196, 0);
 const CALLBACK: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
 const NO_WINDOW: u32 = 0x0800_0000;
@@ -1227,7 +1226,7 @@ unsafe fn wifi_glyph(dc: HDC, cx: i32, cy: i32, s: i32, lit: i32, on: u32, off: 
         GdipCreateSolidFill(argb(pal().bg), &mut bg);
         GdipFillEllipse(g, bg as *mut GpBrush, mx - mr, my - mr, 2.0 * mr, 2.0 * mr);
         GdipDeleteBrush(bg as *mut GpBrush);
-        let c = if mark == 1 { on } else { WARN };
+        let c = if mark == 1 { on } else { Element::BarWarn.color() };
         let p = pen(c, (w * 0.8).max(1.4));
         let d = mr * 0.5;
         if mark == 1 {
@@ -2072,11 +2071,11 @@ unsafe fn paint(hwnd: HWND) {
         SelectObject(dc, f_glyph);
         let (vol, muted) = VOL.get();
         let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-        text(dc, vg, cell(x, sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
+        text(dc, vg, cell(x, sc(22)), if muted { Element::BarBad.color() } else { pal().text }, DT_CENTER);
         x += sc(32);
         let (pct, ac) = BAT.get();
         if pct >= 0 {
-            let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
+            let col = if ac { Element::BarGood.color() } else if pct <= 15 { Element::BarBad.color() } else { pal().text };
             let (bw, bh, by) = (sc(22), sc(11), mid - sc(5));
             fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
             fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));

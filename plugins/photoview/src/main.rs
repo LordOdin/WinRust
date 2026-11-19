@@ -25,7 +25,7 @@ use windows_sys::Win32::{
 
 pub const EXTS: [&str; 11] = ["jpg", "jpeg", "jfif", "png", "bmp", "gif", "tif", "tiff", "webp", "heic", "avif"];
 const WM_IMG: u32 = WM_APP + 1; // lparam = Box<(u32, Result<Img, String>)>
-use winrust_common::style;
+use winrust_common::style::{self, appearance::Element};
 
 static GEN: AtomicU32 = AtomicU32::new(0); // newest load; older decodes that finish late are dropped
 
@@ -34,6 +34,7 @@ struct App {
     files: Vec<PathBuf>,
     idx: usize,
     img: Option<decode::Img>,
+    decoded_bg: Option<u32>,
     note: String,
     zoom: Option<f64>, // None = fit
     off: (f64, f64),
@@ -75,7 +76,8 @@ fn decode_current(hwnd: HWND) {
     let Some(path) = APP.with_borrow(|a| a.files.get(a.idx).cloned()) else {
         return;
     };
-    let bg = style::pal().bg;
+    let bg = Element::PhotoBg.color();
+    APP.with_borrow_mut(|a| a.decoded_bg = Some(bg));
     let bgr = [(bg >> 16) as u8, (bg >> 8) as u8, bg as u8];
     let g = GEN.fetch_add(1, Relaxed) + 1;
     let h = hwnd as isize;
@@ -127,7 +129,7 @@ unsafe fn paint(hwnd: HWND) {
         let mem = CreateCompatibleDC(dc);
         let bmp = CreateCompatibleBitmap(dc, cw, ch);
         let old = SelectObject(mem, bmp);
-        let b = CreateSolidBrush(style::pal().bg);
+        let b = CreateSolidBrush(Element::PhotoBg.color());
         FillRect(mem, &rc, b);
         DeleteObject(b as _);
         APP.with_borrow(|a| {
@@ -140,7 +142,7 @@ unsafe fn paint(hwnd: HWND) {
             } else {
                 SelectObject(mem, a.font as _);
                 SetBkMode(mem, TRANSPARENT as _);
-                SetTextColor(mem, style::pal().dim);
+                SetTextColor(mem, Element::PhotoNote.color());
                 let mut r = rc;
                 let t = wide(if a.files.is_empty() { "Open a picture with this program, or drop one here" } else { &a.note });
                 DrawTextW(mem, t.as_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -171,6 +173,18 @@ fn delete_current(hwnd: HWND) {
     }
 }
 
+unsafe fn apply_appearance(hwnd: HWND) {
+    unsafe {
+        style::apply_frame(hwnd);
+        let dpi = GetDpiForSystem() as i32;
+        let f = CreateFontW(-(18 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide(style::ui_face()).as_ptr());
+        if !f.is_null() {
+            let old = APP.with_borrow_mut(|a| { a.dpi = dpi; std::mem::replace(&mut a.font, f as isize) });
+            if old != 0 { DeleteObject(old as _); }
+        }
+    }
+}
+
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let client = || {
@@ -180,17 +194,15 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         };
         if msg == style::msg() {
             style::reload();
-            style::apply_frame(hwnd);
-            decode_current(hwnd);
+            apply_appearance(hwnd);
+            if APP.with_borrow(|a| a.decoded_bg.is_some_and(|bg| bg != Element::PhotoBg.color())) { decode_current(hwnd); }
             InvalidateRect(hwnd, null(), 0);
             return 0;
         }
         match msg {
             WM_CREATE => {
-                style::apply_frame(hwnd);
-                let dpi = GetDpiForSystem() as i32;
-                let f = CreateFontW(-(18 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide("Segoe UI").as_ptr());
-                APP.with_borrow_mut(|a| (a.dpi, a.font) = (dpi, f as isize));
+                apply_appearance(hwnd);
+
                 DragAcceptFiles(hwnd, 1);
                 0
             }
@@ -287,6 +299,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 0
             }
             WM_DESTROY => {
+                let font = APP.with_borrow_mut(|a| std::mem::take(&mut a.font));
+                if font != 0 { DeleteObject(font as _); }
                 PostQuitMessage(0);
                 0
             }

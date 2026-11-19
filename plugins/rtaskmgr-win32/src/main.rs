@@ -105,7 +105,7 @@ fn main() {
     nwg::init().expect("не удалось инициализировать Win32");
     let scale = nwg::scale_factor();
     let mut font = nwg::Font::default();
-    nwg::Font::builder().family("Segoe UI").size(17).build(&mut font).unwrap();
+    nwg::Font::builder().family(winrust_common::style::ui_face()).size(17).build(&mut font).unwrap();
     nwg::Font::set_global_default(Some(font));
 
     store::trim_history(10_080);
@@ -179,7 +179,7 @@ fn main() {
         icon_big,
         data: RefCell::new(Data::new(cfg.clone())),
         ui: RefCell::new(ui),
-        fonts: Fonts::new(scale),
+        fonts: RefCell::new(Fonts::new(scale)),
         scale,
         edit_brush: Cell::new(0),
         search_rect: Cell::new(R::new(0, 0, 0, 0)),
@@ -204,6 +204,7 @@ fn main() {
     let _raw = nwg::bind_raw_event_handler(&app.win.handle, 0x10000, move |hwnd, msg, w, l| -> Option<isize> {
         if msg == winrust_common::style::msg() {
             winrust_common::style::reload();
+            a.fonts.replace(Fonts::new(a.scale));
             a.apply_theme();
             return Some(0);
         }

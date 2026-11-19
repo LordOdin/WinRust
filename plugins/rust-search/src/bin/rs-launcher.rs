@@ -43,40 +43,36 @@ use windows_sys::Win32::{
 
 type Rgb = (u8, u8, u8);
 // Colours of the WinRust style the topbar gear picks (normal, terminal, dock, tiling): the same palette as the bar.
-use winrust_common::style::{pal, style, ui_face};
+use winrust_common::style::{appearance::Element, square, ui_face};
 fn cr(c: u32) -> Rgb {
     (c as u8, (c >> 8) as u8, (c >> 16) as u8)
 }
-fn mixc(a: u32, b: u32, t: f32) -> u32 {
-    let ch = |sh: u32| (((a >> sh) & 255) as f32 + ((((b >> sh) & 255) as f32) - ((a >> sh) & 255) as f32) * t) as u32;
-    ch(0) | ch(8) << 8 | ch(16) << 16
-}
 fn c_bg() -> Rgb {
-    cr(pal().bg)
+    cr(Element::SearchBg.color())
 }
 fn c_border() -> Rgb {
-    cr(pal().line)
+    cr(Element::SearchLine.color())
 }
 fn c_sel() -> Rgb {
-    cr(pal().active)
+    cr(Element::SearchSel.color())
 }
 fn c_accent() -> Rgb {
-    cr(pal().accent)
+    cr(Element::SearchAccent.color())
 }
 fn c_text() -> Rgb {
-    cr(pal().text)
+    cr(Element::SearchText.color())
 }
 fn c_dim() -> Rgb {
-    cr(pal().dim)
+    cr(Element::SearchDim.color())
 }
 fn c_faint() -> Rgb {
-    cr(mixc(pal().dim, pal().bg, 0.4))
+    cr(Element::SearchFaint.color())
 }
 fn c_menu_bg() -> Rgb {
-    cr(mixc(pal().bg, pal().line, 0.5))
+    cr(Element::SearchMenu.color())
 }
 fn c_menu_hot() -> Rgb {
-    cr(pal().active)
+    cr(Element::SearchMenuHot.color())
 }
 
 // logical pixels; multiplied by the screen scale when used
@@ -387,7 +383,7 @@ unsafe fn apply_style(main: HWND) {
         }
     }
     // Windows 11: rounded corners (square in the terminal and tiling styles), dark frame, border colour. Windows 10 rejects the corner attribute.
-    let square = style().square();
+    let square = square();
     let (round, dark, border) = (if square { 1i32 } else { 2i32 }, 1i32, rgb(c_border()) as i32);
     let hr = DwmSetWindowAttribute(main, 33, &round as *const _ as _, 4);
     DwmSetWindowAttribute(main, 20, &dark as *const _ as _, 4);
@@ -622,7 +618,7 @@ fn start_toggle(p: &str) {
 const MENU_W: i32 = 270;
 const MENU_ITEM_H: i32 = 32;
 const MENU_PAD: i32 = 6;
-const DANGER: Rgb = (248, 113, 113);
+
 
 struct MenuSt {
     x: i32,
@@ -1042,7 +1038,7 @@ fn purge_view(s: &St) -> Option<PView> {
             buttons: vec![],
         },
         Purge::Working(path) => PView {
-            glyph: ("\u{E74D}", DANGER),
+            glyph: ("\u{E74D}", cr(Element::SearchDanger.color())),
             title: ("Deleting\u{2026}".into(), c_text()),
             path: path.clone(),
             lines: vec![("Esc hides this card; the result waits for the next Alt+Space.".into(), c_dim(), false)],
@@ -1062,8 +1058,8 @@ fn purge_view(s: &St) -> Option<PView> {
                 }
             }
             PView {
-                glyph: ("\u{E74D}", DANGER),
-                title: ("Delete forever?".into(), DANGER),
+                glyph: ("\u{E74D}", cr(Element::SearchDanger.color())),
+                title: ("Delete forever?".into(), cr(Element::SearchDanger.color())),
                 path: path.clone(),
                 lines,
                 note: if hits.is_empty() { "Files skip the Recycle Bin and cannot be restored.".into() } else { "Files skip the Recycle Bin. Registry entries are saved to a .reg backup first.".into() },
@@ -1071,8 +1067,8 @@ fn purge_view(s: &St) -> Option<PView> {
             }
         }
         Purge::Done { path, title, lines, ok, backup, hot } => PView {
-            glyph: if *ok { ("\u{E73E}", c_accent()) } else { ("\u{E7BA}", DANGER) },
-            title: (title.clone(), if *ok { c_text() } else { DANGER }),
+            glyph: if *ok { ("\u{E73E}", c_accent()) } else { ("\u{E7BA}", cr(Element::SearchDanger.color())) },
+            title: (title.clone(), if *ok { c_text() } else { cr(Element::SearchDanger.color()) }),
             path: path.clone(),
             lines: lines.iter().enumerate().map(|(i, l)| (l.clone(), if i == 0 { c_text() } else { c_dim() }, false)).collect(),
             note: backup.as_ref().map_or(String::new(), |b| format!("Backup (double-click to restore): {b}")),
@@ -1092,7 +1088,7 @@ unsafe fn draw_purge(dc: HDC, w: i32, v: &View, pv: &PView) {
         let (rad, l, t, bw, bh) = (8.0 * s, *l as f32, *t as f32, (*r - *l) as f32, (*b - *t) as f32);
         if *danger {
             // the destructive button stays an outline until it is the chosen one
-            round_rect(g, l, t, bw, bh, rad, DANGER);
+            round_rect(g, l, t, bw, bh, rad, cr(Element::SearchDanger.color()));
             if !*hot {
                 round_rect(g, l + 1.5 * s, t + 1.5 * s, bw - 3.0 * s, bh - 3.0 * s, rad - 1.5 * s, c_bg());
             }
@@ -1117,7 +1113,7 @@ unsafe fn draw_purge(dc: HDC, w: i32, v: &View, pv: &PView) {
         text(dc, v.fonts[F_HINT], c_faint(), RECT { left: p(22), top: bottom - p(20 + 36 + 30), right: w - p(22), bottom: bottom - p(20 + 36 + 8) }, &pv.note, DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS);
     }
     for ((l, t, r, b), label, danger, hot) in &pv.buttons {
-        let c = if *danger && *hot { (20, 20, 24) } else if *danger { DANGER } else { c_text() };
+        let c = if *danger && *hot { cr(Element::SearchDangerText.color()) } else if *danger { cr(Element::SearchDanger.color()) } else { c_text() };
         text(dc, v.fonts[F_PATH], c, RECT { left: *l, top: *t, right: *r, bottom: *b }, label, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
     }
 }
@@ -1192,7 +1188,7 @@ unsafe fn fill(dc: HDC, l: i32, t: i32, r: i32, b: i32, c: Rgb) {
 }
 
 unsafe fn round_rect(g: *mut GpGraphics, x: f32, y: f32, w: f32, h: f32, r: f32, c: Rgb) {
-    let r = if style().square() { 0.5 } else { r }; // a hair of a radius: zero-size arcs would drop the whole shape
+    let r = if square() { 0.5 } else { r }; // a hair of a radius: zero-size arcs would drop the whole shape
     let mut path: *mut GpPath = null_mut();
     GdipCreatePath(FillModeAlternate, &mut path);
     let d = r * 2.0;
@@ -1312,7 +1308,7 @@ unsafe fn draw(dc: HDC, w: i32, hgt: i32, v: &View) {
         for (i, label) in MENU.iter().enumerate() {
             let label = if i == 3 && v.menu_pinned { "Remove from Start" } else { label };
             let y0 = t + pad + i as i32 * ih;
-            let c = if i == MENU.len() - 1 { DANGER } else { c_text() };
+            let c = if i == MENU.len() - 1 { cr(Element::SearchDanger.color()) } else { c_text() };
             text(dc, v.fonts[F_PATH], c, RECT { left: l + pad + p(12), top: y0, right: l + mw - pad, bottom: y0 + ih }, label, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
     }

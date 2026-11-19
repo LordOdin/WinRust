@@ -16,7 +16,7 @@ use windows_sys::Win32::{
 const WM_DONE: u32 = WM_APP + 1; // lparam = Box<Result<Tree, String>>
 const DRIVE_FIXED: u32 = 3;
 const MAX_CELLS: usize = 300;
-use winrust_common::style;
+use winrust_common::style::{self, appearance::Element};
 
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
@@ -110,6 +110,8 @@ fn squarify(items: &[(u32, u64)], (mut x, mut y, mut w, mut h): (f64, f64, f64, 
 
 /// Stable colour per extension / folder name (folders darker than files).
 fn color(name: &str, dir: bool) -> u32 {
+    let role = if dir { Element::DiskFolders } else { Element::DiskFiles };
+    if role.is_custom() { return role.color(); }
     let key = if dir { name } else { name.rsplit_once('.').map_or("", |e| e.1) };
     let hue = (key.bytes().fold(7u32, |a, b| a.wrapping_mul(31).wrapping_add(b.to_ascii_lowercase() as u32)) % 360) as f64;
     let (s, v) = if dir { (0.35, 0.42) } else { (0.5, 0.72) };
@@ -156,7 +158,7 @@ unsafe fn paint(hwnd: HWND) {
                 FillRect(mem, r, b);
                 DeleteObject(b as _);
             };
-            fill(&rc, style::pal().bg);
+            fill(&rc, Element::DiskBg.color());
             SelectObject(mem, a.font as _);
             SetBkMode(mem, TRANSPARENT as _);
             let text = |s: &str, mut r: RECT, c: u32, fmt: u32| {
@@ -180,13 +182,13 @@ unsafe fn paint(hwnd: HWND) {
                     let inner = RECT { left: c.left + 1, top: c.top + 1, right: c.right - 1, bottom: c.bottom - 1 };
                     fill(&inner, color(&rec.name, rec.dir));
                     if a.hot == Some(n) {
-                        let b = CreateSolidBrush(rgb(255, 255, 255));
+                        let b = CreateSolidBrush(Element::DiskOutline.color());
                         FrameRect(mem, &inner, b);
                         DeleteObject(b as _);
                     }
                     if inner.right - inner.left > (70.0 * k) as i32 && inner.bottom - inner.top > (34.0 * k) as i32 {
                         let r = RECT { left: inner.left + 6, top: inner.top + 4, right: inner.right - 4, bottom: inner.bottom - 2 };
-                        text(&format!("{}\n{}", rec.name, human(t.tot[id])), r, rgb(255, 255, 255), DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+                        text(&format!("{}\n{}", rec.name, human(t.tot[id])), r, Element::DiskLabel.color(), DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
                     }
                 }
                 let size = if a.cur == ROOT { t.tot.values().max().copied().unwrap_or(0) } else { t.tot.get(&a.cur).copied().unwrap_or(0) };
@@ -196,8 +198,8 @@ unsafe fn paint(hwnd: HWND) {
                     None => "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan".into(),
                 };
             }
-            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, style::pal().accent, one);
-            text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, style::pal().dim, one);
+            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, Element::DiskHeader.color(), one);
+            text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, Element::DiskFooter.color(), one);
         });
         BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
@@ -217,20 +219,30 @@ fn up(hwnd: HWND) {
     unsafe { InvalidateRect(hwnd, null(), 0) };
 }
 
+unsafe fn apply_appearance(hwnd: HWND) {
+    unsafe {
+        style::apply_frame(hwnd);
+        let dpi = GetDpiForSystem() as i32;
+        let f = CreateFontW(-(15 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide(style::ui_face()).as_ptr());
+        if !f.is_null() {
+            let old = APP.with_borrow_mut(|a| { a.dpi = dpi; std::mem::replace(&mut a.font, f as isize) });
+            if old != 0 { DeleteObject(old as _); }
+        }
+    }
+}
+
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if msg == style::msg() {
             style::reload();
-            style::apply_frame(hwnd);
+            apply_appearance(hwnd);
             InvalidateRect(hwnd, std::ptr::null(), 0);
             return 0;
         }
         match msg {
             WM_CREATE => {
-                style::apply_frame(hwnd);
-                let dpi = GetDpiForSystem() as i32;
-                let f = CreateFontW(-(15 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide("Segoe UI").as_ptr());
-                APP.with_borrow_mut(|a| (a.dpi, a.font) = (dpi, f as isize));
+                apply_appearance(hwnd);
+
                 0
             }
             WM_PAINT => {
@@ -301,6 +313,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 0
             }
             WM_DESTROY => {
+                let font = APP.with_borrow_mut(|a| std::mem::take(&mut a.font));
+                if font != 0 { DeleteObject(font as _); }
                 PostQuitMessage(0);
                 0
             }

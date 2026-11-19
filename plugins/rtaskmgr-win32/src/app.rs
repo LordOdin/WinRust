@@ -140,7 +140,7 @@ pub struct App {
     pub icon_big: nwg::Icon,
     pub data: RefCell<Data>,
     pub ui: RefCell<Ui>,
-    pub fonts: Fonts,
+    pub fonts: RefCell<Fonts>,
     pub scale: f64,
     pub edit_brush: Cell<isize>,
     pub search_rect: Cell<R>,
@@ -274,7 +274,8 @@ impl App {
                 let mem = winapi::um::wingdi::CreateCompatibleDC(hdc);
                 let bmp = winapi::um::wingdi::CreateCompatibleBitmap(hdc, w, h);
                 let old = winapi::um::wingdi::SelectObject(mem, bmp as *mut _);
-                let g = G { dc: mem, s: self.scale, th: ui.th, fonts: &self.fonts };
+                let fonts = self.fonts.borrow();
+                let g = G { dc: mem, s: self.scale, th: ui.th, fonts: &fonts };
                 let lay = self.compute_layout(&g, &ui, &d, w, h);
                 // прокрутка не должна выходить за содержимое
                 let area_h = if ui.has_table() { lay.rows_area.h() } else { lay.body.h() } as f64;
@@ -774,7 +775,7 @@ impl App {
         match id {
             SettingId::Theme => {
                 let ctl_l = r.r - (200.0 * self.scale) as i32;
-                let seg = ((x - ctl_l) / (((200.0 * self.scale) as i32 - (16.0 * self.scale) as i32) / 3).max(1)).clamp(0, 2);
+                let seg = ((x - ctl_l) / (((200.0 * self.scale) as i32 - (16.0 * self.scale) as i32) / 4).max(1)).clamp(0, 3);
                 self.do_act(Act::SetTheme(seg as u8));
             }
             SettingId::Tray => self.do_act(Act::ToggleTray),
@@ -831,7 +832,7 @@ impl App {
             MI::Item(t!("Запустить новую задачу", "Run new task"), Act::RunTask),
             MI::Item(t!("Экспорт в CSV", "Export to CSV"), Act::Export),
             MI::Sep,
-            MI::Sub(t!("Тема", "Theme"), vec![MI::Check(t!("Светлая", "Light"), Act::SetTheme(0), d.cfg.theme == 0), MI::Check(t!("Тёмная", "Dark"), Act::SetTheme(1), d.cfg.theme == 1), MI::Check("WinRust", Act::SetTheme(2), d.cfg.theme == 2), MI::Check(t!("Системная", "System"), Act::SetTheme(3), d.cfg.theme == 3)]),
+            MI::Sub(t!("Тема", "Theme"), vec![MI::Check(t!("Светлая", "Light"), Act::SetTheme(0), Self::effective_theme(d.cfg.theme) == 0), MI::Check(t!("Тёмная", "Dark"), Act::SetTheme(1), Self::effective_theme(d.cfg.theme) == 1), MI::Check("WinRust", Act::SetTheme(2), Self::effective_theme(d.cfg.theme) == 2), MI::Check(t!("Системная", "System"), Act::SetTheme(3), Self::effective_theme(d.cfg.theme) == 3)]),
             MI::Item(t!("Параметры", "Settings"), Act::Go(Page::Settings)),
         ]
         .into_iter()
@@ -890,6 +891,8 @@ impl App {
             }
             Act::SetTheme(t) => {
                 self.data.borrow_mut().cfg.theme = t;
+                let choice = winrust_common::style::appearance::Choice::TaskMode;
+                if choice.value() != 0 { let _ = choice.save(t as u32 + 1); }
                 self.apply_theme();
                 self.save_settings();
                 return;
@@ -1157,8 +1160,13 @@ impl App {
     }
 
     // ================= окно, тема, настройки =================
+    pub fn effective_theme(saved: u8) -> u8 {
+        let choice = winrust_common::style::appearance::Choice::TaskMode.value();
+        choice.checked_sub(1).map_or(saved, |v| v as u8)
+    }
+
     pub fn apply_theme(&self) {
-        let th = match self.data.borrow().cfg.theme {
+        let th = match Self::effective_theme(self.data.borrow().cfg.theme) {
             0 => theme(false),
             1 => theme(true),
             3 => theme(sys::system_dark()),
@@ -1168,6 +1176,12 @@ impl App {
         self.ui.borrow_mut().th = th;
         if let Some(h) = self.win.handle.hwnd() {
             sys::set_dark_titlebar(h, dark);
+            if Self::effective_theme(self.data.borrow().cfg.theme) == 2 {
+                unsafe { winrust_common::style::apply_frame(h.cast()); }
+            } else {
+                // Release custom caption colors when the user switches to Windows, light or dark.
+                sys::reset_frame_colors(h);
+            }
         }
         unsafe {
             let old = self.edit_brush.replace(winapi::um::wingdi::CreateSolidBrush(th.panel.c()) as isize);

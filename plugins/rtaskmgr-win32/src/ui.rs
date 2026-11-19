@@ -7,6 +7,7 @@ use winapi::um::{wingdi::*, winuser::*};
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
+    pub fn from_color(c: u32) -> Self { Self(c as u8, (c >> 8) as u8, (c >> 16) as u8) }
     pub fn c(self) -> u32 {
         self.0 as u32 | (self.1 as u32) << 8 | (self.2 as u32) << 16
     }
@@ -36,23 +37,23 @@ pub struct Theme {
 }
 
 pub fn winrust_theme() -> Theme {
-    let p = winrust_common::style::pal();
-    let rgb = |c: u32| Rgb(c as u8, (c >> 8) as u8, (c >> 16) as u8);
-    let bg = rgb(p.bg);
-    let accent = rgb(p.accent);
+    use winrust_common::style::appearance::Element::*;
+    let bg = Rgb::from_color(TaskBg.color());
     let dark = 299 * bg.0 as u32 + 587 * bg.1 as u32 + 114 * (bg.2 as u32) < 128000;
     Theme {
-        dark, bg, accent,
-        nav: bg.lerp(rgb(p.hover), 0.5),
-        panel: rgb(p.hover),
-        text: rgb(p.text),
-        dim: rgb(p.dim),
-        border: rgb(p.line),
-        sel: rgb(p.active),
-        hover: rgb(p.hover),
-        heat0: bg.lerp(accent, 0.10),
-        heat1: bg.lerp(accent, 0.48),
-        ..theme(dark)
+        dark, bg,
+        nav: Rgb::from_color(TaskNav.color()),
+        panel: Rgb::from_color(TaskPanel.color()),
+        text: Rgb::from_color(TaskText.color()),
+        dim: Rgb::from_color(TaskDim.color()),
+        border: Rgb::from_color(TaskBorder.color()),
+        sel: Rgb::from_color(TaskSel.color()),
+        hover: Rgb::from_color(TaskHover.color()),
+        accent: Rgb::from_color(TaskAccent.color()),
+        heat0: Rgb::from_color(TaskHeatLow.color()),
+        heat1: Rgb::from_color(TaskHeatHigh.color()),
+        warn: Rgb::from_color(TaskWarn.color()),
+        bad: Rgb::from_color(TaskBad.color()),
     }
 }
 
@@ -155,12 +156,12 @@ impl Fonts {
         let p = |x: f64| (x * s).round() as i32;
         Fonts {
             f: [
-                mk("Segoe UI", p(13.0), 400),
-                mk("Segoe UI", p(12.0), 400),
-                mk("Segoe UI Semibold", p(13.0), 600),
-                mk("Segoe UI Semibold", p(22.0), 600),
-                mk("Segoe UI", p(20.0), 400),
-                mk("Segoe UI", p(30.0), 300),
+                mk(winrust_common::style::ui_face(), p(13.0), 400),
+                mk(winrust_common::style::ui_face(), p(12.0), 400),
+                mk(winrust_common::style::ui_face(), p(13.0), 600),
+                mk(winrust_common::style::ui_face(), p(22.0), 600),
+                mk(winrust_common::style::ui_face(), p(20.0), 400),
+                mk(winrust_common::style::ui_face(), p(30.0), 300),
                 mk(icon_face(), p(16.0), 400),
                 mk(icon_face(), p(13.0), 400),
             ],

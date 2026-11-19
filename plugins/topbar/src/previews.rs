@@ -337,7 +337,7 @@ unsafe fn paint(hwnd: HWND) {
     let buffered = !buffer.is_null() && !bitmap.is_null();
     let dc = if buffered { buffer } else { target };
     let old_bitmap = if buffered { SelectObject(dc, bitmap) } else { null_mut() };
-    fill(dc, r, pal().bg, 0);
+    fill(dc, r, Element::PreviewBg.color(), 0);
     SetBkMode(dc, TRANSPARENT as i32);
     let font = tip_font();
     let old = SelectObject(dc, font);
@@ -349,9 +349,9 @@ unsafe fn paint(hwnd: HWND) {
                 dc,
                 b,
                 if HOVERED.get() == card.window {
-                    pal().hover
+                    Element::PreviewHover.color()
                 } else {
-                    pal().active
+                    Element::PreviewCard.color()
                 },
                 rr(6),
             );
@@ -378,7 +378,7 @@ unsafe fn paint(hwnd: HWND) {
                     top: b.top,
                     bottom: b.top + sc(30),
                 },
-                pal().text,
+                Element::PreviewText.color(),
                 DT_LEFT,
             );
             if card.size.cx == 0 && !card.icon.is_null() {
@@ -402,10 +402,10 @@ unsafe fn paint(hwnd: HWND) {
                 dc,
                 &format!("{} / {}", g.page + 1, g.windows.len().div_ceil(g.capacity)),
                 RECT { top, ..r },
-                pal().text,
+                Element::PreviewText.color(),
                 DT_CENTER,
             );
-            text(dc, "‹", RECT { left: sc(12), top, ..r }, pal().text, DT_LEFT);
+            text(dc, "‹", RECT { left: sc(12), top, ..r }, Element::PreviewText.color(), DT_LEFT);
             text(
                 dc,
                 "›",
@@ -414,7 +414,7 @@ unsafe fn paint(hwnd: HWND) {
                     top,
                     ..r
                 },
-                pal().text,
+                Element::PreviewText.color(),
                 DT_RIGHT,
             );
         }

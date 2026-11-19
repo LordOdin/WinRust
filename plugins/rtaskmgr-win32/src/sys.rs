@@ -268,6 +268,12 @@ pub fn set_dark_titlebar(h: winapi::shared::windef::HWND, dark: bool) {
     unsafe { DwmSetWindowAttribute(h, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &v as *const i32 as *const _, 4) };
 }
 
+pub fn reset_frame_colors(h: winapi::shared::windef::HWND) {
+    for (attr, value) in [(33, 0u32), (34, 0xffffffff), (35, 0xffffffff), (36, 0xffffffff)] {
+        unsafe { DwmSetWindowAttribute(h, attr, (&value as *const u32).cast(), 4); }
+    }
+}
+
 /// Заголовки видимых окон верхнего уровня по PID (без окон-владельцев и без пустых заголовков).
 pub fn window_titles() -> HashMap<u32, String> {
     use winapi::shared::{minwindef::{BOOL, LPARAM}, windef::HWND};

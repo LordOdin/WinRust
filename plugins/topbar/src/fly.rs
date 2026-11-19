@@ -1060,7 +1060,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
             let (pct, ac) = BAT.get();
             SelectObject(dc, f_glyph);
             if pct >= 0 {
-                text(dc, if ac { "\u{E83E}" } else { "\u{E83F}" }, r(16, h - 48, 44, h - 8), if ac { GOOD } else { pal().text }, DT_CENTER);
+                text(dc, if ac { "\u{E83E}" } else { "\u{E83F}" }, r(16, h - 48, 44, h - 8), if ac { Element::BarGood.color() } else { pal().text }, DT_CENTER);
                 SelectObject(dc, f_txt);
                 text(dc, &format!("{pct}%"), r(48, h - 48, 140, h - 8), pal().text, DT_LEFT);
             }
@@ -1112,8 +1112,8 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 (note, pal().dim)
             } else {
                 match state {
-                    Link::Wifi(_) => (t!("Подключено · интернет есть", "Connected · online").to_string(), GOOD),
-                    Link::NoInternet(_) => (t!("Подключено, но интернета нет", "Connected, no internet").into(), WARN),
+                    Link::Wifi(_) => (t!("Подключено · интернет есть", "Connected · online").to_string(), Element::BarGood.color()),
+                    Link::NoInternet(_) => (t!("Подключено, но интернета нет", "Connected, no internet").into(), Element::BarWarn.color()),
                     Link::Cable => (t!("Интернет по кабелю", "Online over a cable").into(), pal().dim),
                     Link::Offline if on => (t!("Не подключено", "Not connected").into(), pal().dim),
                     Link::Offline => (t!("Выключен", "Turned off").into(), pal().dim),
@@ -1178,7 +1178,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             wifi_glyph(dc, rc.left + sc(30), rc.top + sc(32), sc(26), lit, ink(pal().accent), ink(mix(pal().dim, card, 0.45)), if online { 0 } else { 2 });
                             SelectObject(dc, f_title);
                             text(dc, &n.ssid, RECT { left: rc.left + sc(60), top: rc.top + sc(12), right: rc.right - sc(14), bottom: rc.top + sc(36) }, ink(pal().text), DT_LEFT);
-                            let (dot, words) = if online { (GOOD, t!("Интернет есть", "Online")) } else { (WARN, t!("Нет интернета", "No internet")) };
+                            let (dot, words) = if online { (Element::BarGood.color(), t!("Интернет есть", "Online")) } else { (Element::BarWarn.color(), t!("Нет интернета", "No internet")) };
                             let dy = rc.top + sc(46);
                             fill(dc, RECT { left: rc.left + sc(60), top: dy - sc(3), right: rc.left + sc(66), bottom: dy + sc(3) }, ink(dot), sc(6));
                             SelectObject(dc, f_small);
@@ -1191,7 +1191,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             text(dc, &det, RECT { left: rc.left + sc(60), top: rc.top + sc(58), right: rc.right - sc(14), bottom: rc.top + sc(76) }, ink(pal().dim), DT_LEFT);
                             // a quiet Disconnect button that turns red under the pointer
                             if let Some(&(ob, _)) = rs.iter().find(|(_, a)| *a == Act::NetOff) {
-                                g(Act::NetOff, ob, mix(card, pal().bg, 0.5), mix(card, BAD, 0.3), sc(8));
+                                g(Act::NetOff, ob, mix(card, pal().bg, 0.5), mix(card, Element::BarBad.color(), 0.3), sc(8));
                                 SelectObject(dc, f_small);
                                 text(dc, t!("Отключиться", "Disconnect"), ob, ink(if hot(Act::NetOff) { pal().text } else { mix(pal().dim, pal().text, 0.5) }), DT_CENTER);
                             }
@@ -1205,7 +1205,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                             text(dc, &n.ssid, name_rc, ink(pal().text), DT_LEFT);
                             if !sub.is_empty() {
                                 SelectObject(dc, f_small);
-                                text(dc, sub, RECT { left: rc.left + sc(46), top: rc.top + sc(25), right: rc.right - sc(110), bottom: rc.bottom - sc(5) }, ink(if n.secure { pal().dim } else { WARN }), DT_LEFT);
+                                text(dc, sub, RECT { left: rc.left + sc(46), top: rc.top + sc(25), right: rc.right - sc(110), bottom: rc.bottom - sc(5) }, ink(if n.secure { pal().dim } else { Element::BarWarn.color() }), DT_LEFT);
                             }
                             if hot(Act::Net(i)) {
                                 SelectObject(dc, f_small);
@@ -1251,8 +1251,8 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     if it.sep {
                         fill(dc, RECT { left: rc.left + sc(6), top: rc.top - sc(5), right: rc.right - sc(6), bottom: rc.top - sc(5) + 1 }, pal().line, 0);
                     }
-                    let col = if it.danger { BAD } else { pal().text };
-                    g(*a, *rc, pal().bg, if it.danger { mix(pal().bg, BAD, 0.22) } else { pal().hover }, sc(8));
+                    let col = if it.danger { Element::BarBad.color() } else { pal().text };
+                    g(*a, *rc, pal().bg, if it.danger { mix(pal().bg, Element::BarBad.color(), 0.22) } else { pal().hover }, sc(8));
                     // plain text rows: a window's own icon is the only picture; the current choice gets an accent dot
                     let mut lx = rc.left + sc(14);
                     if !it.icon.is_null() {
@@ -1334,7 +1334,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     }
                     Act::Power(p) => {
                         let armed = CONFIRM.get() == p as i32;
-                        glow(dc, rc.top * 4096 + rc.left + 1_000_000, armed || hot(*a), *rc, pal().bg, if armed { BAD } else { pal().hover }, sc(8));
+                        glow(dc, rc.top * 4096 + rc.left + 1_000_000, armed || hot(*a), *rc, pal().bg, if armed { Element::BarBad.color() } else { pal().hover }, sc(8));
                         SelectObject(dc, f_glyph);
                         text(dc, ["\u{E72E}", "\u{E708}", "\u{E777}", "\u{E7E8}"][p as usize], *rc, pal().text, DT_CENTER);
                     }

@@ -941,7 +941,11 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
         if m == winrust_common::style::msg() {
             // the topbar switched the WinRust style: take it now (the desktop's list keeps its see-through colours)
             winrust_common::style::reload();
-            if desk() { InvalidateRect(h, ptr::null(), 1); } else { ui::restyle(h); }
+            if desk() {
+                let list = ST.with_borrow(|s| s.list);
+                put(list, LVM_SETTEXTCOLOR, 0, winrust_common::style::appearance::Element::DesktopLabel.color() as isize);
+                InvalidateRect(list, ptr::null(), 1);
+            } else { ui::restyle(h); }
             return 0;
         }
         match m {
@@ -970,7 +974,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     let ex = LVS_EX_TRANSPARENTBKGND | 0x0080_0000; // LVS_EX_TRANSPARENTSHADOWTEXT
                     put(list, LVM_SETEXTENDEDLISTVIEWSTYLE, ex as usize, ex as isize);
                     for msg in [LVM_SETBKCOLOR, LVM_SETTEXTBKCOLOR] { put(list, msg, 0, CLR_NONE); }
-                    put(list, LVM_SETTEXTCOLOR, 0, 0x00FF_FFFF);
+                    put(list, LVM_SETTEXTCOLOR, 0, winrust_common::style::appearance::Element::DesktopLabel.color() as isize);
                     // grey (not ClearType) smoothing: on a live wallpaper the labels sit on a colour key, where ClearType leaves coloured fringes
                     put(list, WM_SETFONT, windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr()) as usize, 1);
                     // like explorer's desktop: wallpaper apps look for a SHELLDLL_DefView under Progman

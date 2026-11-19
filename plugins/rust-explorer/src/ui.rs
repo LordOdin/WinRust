@@ -6,12 +6,12 @@ use super::*;
 use std::{cell::Cell, collections::HashMap, path::Path};
 use windows_sys::Win32::{Graphics::{Dwm::DwmSetWindowAttribute, Gdi::*}, System::{LibraryLoader::{GetProcAddress, LoadLibraryW}, SystemInformation::GetTickCount64}, UI::Input::KeyboardAndMouse::{GetFocus, TRACKMOUSEEVENT, TME_LEAVE, TrackMouseEvent}};
 
-pub const fn rgb(r: u8, g: u8, b: u8) -> u32 { r as u32 | (g as u32) << 8 | (b as u32) << 16 }
 // The colours come from the WinRust style the topbar gear picks (normal, terminal, dock, tiling): the same palette as the bar.
-pub use winrust_common::style::{pal, ui_face};
-pub fn listbg() -> u32 { mix(pal().bg, 0, 0.22) }
-pub fn pill() -> u32 { mix(pal().bg, 0, 0.35) }
-pub fn off() -> u32 { mix(pal().dim, pal().bg, 0.45) }
+pub use winrust_common::style::{appearance::explorer_palette as pal, ui_face};
+use winrust_common::style::appearance::Element;
+pub fn listbg() -> u32 { Element::ExplorerList.color() }
+pub fn pill() -> u32 { Element::ExplorerAddress.color() }
+pub fn off() -> u32 { Element::ExplorerDisabled.color() }
 
 pub const CHROME_H: i32 = 88;
 pub const STATUS_H: i32 = 26;
@@ -123,7 +123,7 @@ pub fn dark_title(h: HWND) {
     unsafe {
         let set = |attr: u32, v: i32| { DwmSetWindowAttribute(h, attr, &v as *const _ as _, 4); };
         set(20, 1); // immersive dark mode
-        set(33, if winrust_common::style::style().square() { 1 } else { 2 }); // round corners, square in the terminal and tiling styles
+        set(33, if winrust_common::style::square() { 1 } else { 2 }); // round corners, square in the terminal and tiling styles
         winrust_common::style::apply_frame(h);
     }
 }
@@ -262,9 +262,9 @@ pub unsafe fn list_draw(lp: LPARAM) -> LRESULT {
             let focus = GetFocus() == list;
             let pill = rc(sc(6), r.top + sc(2), cr.right - sc(6), r.bottom - sc(2));
             let bg = match (sel, focus) {
-                (true, true) => mix(listbg(), pal().accent, if hot { 0.26 } else { 0.20 }),
+                (true, true) => if hot { mix(Element::ExplorerSelected.color(), pal().accent, 0.075) } else { Element::ExplorerSelected.color() },
                 (true, false) => mix(listbg(), pal().text, 0.10),
-                _ if hot => mix(listbg(), pal().text, 0.055),
+                _ if hot => Element::ExplorerRowHot.color(),
                 _ => listbg(),
             };
             if bg != listbg() { fill(dc, pill, bg, sc(10)); }
@@ -443,7 +443,7 @@ pub fn gdiplus_start() {
 
 /// Fills `r` (right / bottom exclusive) in `c`; `rad` > 0 rounds the corners (rad = corner diameter), anti-aliased.
 unsafe fn fill(dc: HDC, r: RECT, c: u32, rad: i32) {
-    let rad = if winrust_common::style::style().square() { 0 } else { rad };
+    let rad = if winrust_common::style::square() { 0 } else { rad };
     use windows_sys::Win32::Graphics::GdiPlus::*;
     let (wd, ht) = ((r.right - r.left) as f32, (r.bottom - r.top) as f32);
     if wd <= 0.0 || ht <= 0.0 { return; }
@@ -602,7 +602,7 @@ pub unsafe fn paint_status(h: HWND) {
     let mut cr: RECT = std::mem::zeroed();
     GetClientRect(h, &mut cr);
     let strip = rc(0, cr.bottom - sc(STATUS_H), cr.right, cr.bottom);
-    let bg = CreateSolidBrush(pal().bg);
+    let bg = CreateSolidBrush(Element::ExplorerStatus.color());
     FillRect(dc, &strip, bg);
     DeleteObject(bg);
     fill(dc, rc(0, strip.top, cr.right, strip.top + 1), pal().line, 0); // hairline above the status line
@@ -807,7 +807,7 @@ unsafe fn paint_nav(hwnd: HWND) {
     BUSY.set(false);
     let (dc, bmp) = (CreateCompatibleDC(wdc), CreateCompatibleBitmap(wdc, cr.right.max(1), cr.bottom.max(1)));
     let old = SelectObject(dc, bmp);
-    let bg = CreateSolidBrush(pal().bg);
+    let bg = CreateSolidBrush(Element::ExplorerNav.color());
     FillRect(dc, &cr, bg);
     DeleteObject(bg);
     SetBkMode(dc, TRANSPARENT as i32);
@@ -843,7 +843,7 @@ unsafe fn paint_nav(hwnd: HWND) {
                 let bar = rc(r.left + sc(48), y + sc(30), r.right - sc(14), y + sc(34));
                 fill(dc, bar, mix(pal().bg, pal().text, 0.12), sc(4));
                 let fw = ((bar.right - bar.left) as f32 * used) as i32;
-                fill(dc, rc(bar.left, bar.top, bar.left + fw.max(sc(4)), bar.bottom), if used > 0.9 { rgb(255, 99, 97) } else { pal().accent }, sc(4));
+                fill(dc, rc(bar.left, bar.top, bar.left + fw.max(sc(4)), bar.bottom), if used > 0.9 { Element::ExplorerLow.color() } else { pal().accent }, sc(4));
                 SelectObject(dc, f_small);
                 let gb = |b: u64| b as f64 / 1_073_741_824.0;
                 text(dc, &format!("{:.0} GB free of {:.0} GB", gb(free), gb(total)), rc(bar.left, bar.bottom + sc(1), r.right - sc(8), y + hgt - sc(2)), pal().dim, DT_LEFT);

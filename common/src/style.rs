@@ -1,4 +1,6 @@
 //! Per-user theme shared by the WinRust programs. Open windows refresh on WinRustStyleChanged.
+pub mod appearance;
+use appearance::{Choice, Element};
 use std::{
     cell::Cell,
     io,
@@ -84,6 +86,8 @@ impl Theme {
         }
     }
 
+    pub fn preset_colors(self) -> [u32; 7] { colors(&PALS[if self.selected == CUSTOM {self.base} else {self.selected}]) }
+
     pub fn colors(self) -> [u32; 7] {
         if self.selected == CUSTOM { self.custom } else { colors(&PALS[self.selected]) }
     }
@@ -110,9 +114,18 @@ impl Theme {
             return Err(io::Error::from_raw_os_error(err as i32));
         }
         CACHE.set(Some((Instant::now(), self)));
-        unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+        changed();
         Ok(())
     }
+}
+
+fn changed() {
+    appearance::reload();
+    unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+}
+
+pub fn square() -> bool {
+    match Choice::Corners.value() { 1 => false, 2 => true, _ => style().square() }
 }
 
 pub fn legacy_style() -> Style {
@@ -125,6 +138,7 @@ thread_local! { static CACHE: Cell<Option<(Instant, Theme)>> = const { Cell::new
 
 pub fn reload() {
     CACHE.set(None);
+    appearance::reload();
 }
 
 pub fn theme() -> Theme {
@@ -239,9 +253,8 @@ pub fn pal() -> Pal {
 
 /// Apply the saved palette to a Win32 nonclient frame (unsupported DWM attributes are ignored).
 pub unsafe fn apply_frame(hwnd: windows_sys::Win32::Foundation::HWND) {
-    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DwmSetWindowAttribute};
-    let p = pal();
-    for (attr, color) in [(DWMWA_CAPTION_COLOR, p.bg), (DWMWA_TEXT_COLOR, p.text), (DWMWA_BORDER_COLOR, p.line)] {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute};
+    for (attr, color) in [(DWMWA_WINDOW_CORNER_PREFERENCE, if square() {1} else {2}), (DWMWA_CAPTION_COLOR, Element::FrameBg.color()), (DWMWA_TEXT_COLOR, Element::FrameText.color()), (DWMWA_BORDER_COLOR, Element::FrameLine.color())] {
         unsafe {
             DwmSetWindowAttribute(hwnd, attr as u32, (&color as *const u32).cast(), 4);
         }
@@ -250,7 +263,7 @@ pub unsafe fn apply_frame(hwnd: windows_sys::Win32::Foundation::HWND) {
 
 /// The UI font of the current style.
 pub fn ui_face() -> &'static str {
-    if style().mono() { "Consolas" } else { "Segoe UI" }
+    match Choice::Font.value() { 1 => "Segoe UI", 2 => "Consolas", _ if style().mono() => "Consolas", _ => "Segoe UI" }
 }
 
 #[cfg(test)]

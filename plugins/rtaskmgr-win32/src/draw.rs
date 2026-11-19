@@ -9,8 +9,10 @@ pub const NAV_W_OPEN: f64 = 220.0;
 pub const BAND_H: f64 = 52.0;
 
 pub fn series_color(i: usize, dark: bool) -> Rgb {
-    let c = [Rgb(23, 169, 208), Rgb(86, 124, 214), Rgb(82, 177, 95), Rgb(224, 138, 60), Rgb(176, 92, 216)][i.min(4)];
-    if dark { c } else { c.lerp(Rgb(0, 0, 0), 0.18) }
+    use winrust_common::style::appearance::Element::*;
+    let role = [GraphCPU, GraphMemory, GraphDisk, GraphNetwork, GraphGPU][i.min(4)];
+    let c = Rgb::from_color(role.color());
+    if dark || role.is_custom() { c } else { c.lerp(Rgb(0, 0, 0), 0.18) }
 }
 
 /// График: сетка, заливка под линией и сама линия; самое новое значение — справа.
@@ -266,11 +268,11 @@ impl App {
             let ctl = R::new(r.r - g.px(200.0), r.t, r.r - g.px(16.0), r.b);
             match id {
                 SettingId::Theme => {
-                    let seg = [t!("Светлая", "Light"), t!("Тёмная", "Dark"), t!("Системная", "System")];
-                    let sw = ctl.w() / 3;
+                    let seg = [t!("Светлая", "Light"), t!("Тёмная", "Dark"), "WinRust", t!("Системная", "System")];
+                    let sw = ctl.w() / seg.len() as i32;
                     for (i, s) in seg.iter().enumerate() {
                         let sr = R::new(ctl.l + i as i32 * sw, r.t + g.px(14.0), ctl.l + (i as i32 + 1) * sw, r.b - g.px(14.0));
-                        let on = d.cfg.theme as usize == i;
+                        let on = App::effective_theme(d.cfg.theme) as usize == i;
                         g.round(sr, g.px(4.0), Some(if on { th.accent } else { th.bg }), Some(th.border));
                         g.text_center(sr, s, Font::Small, if on { if th.dark { Rgb(0, 0, 0) } else { Rgb(255, 255, 255) } } else { th.text });
                     }

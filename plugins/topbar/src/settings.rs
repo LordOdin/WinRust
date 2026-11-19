@@ -337,7 +337,11 @@ pub(super) unsafe fn move_to(bar: HWND, index: usize) {
 unsafe fn show_page(dlg: HWND, page: isize) {
     ShowWindow(GetDlgItem(dlg, OPTIONS), if page == 0 { SW_SHOW } else { SW_HIDE });
     ShowWindow(GetDlgItem(dlg, TIMES), if page == 1 { SW_SHOW } else { SW_HIDE });
-    for id in 127..=130 {
+    for id in [1001, STYLE, 132, 131, 1002, HEIGHT, 1004, DISPLAYS, TILE, HINT] {
+        ShowWindow(GetDlgItem(dlg,id), if page == 2 {SW_HIDE} else {SW_SHOW});
+    }
+    theme::mode_visible(dlg, page == 2);
+    for id in (127..=130).chain(145..=151) {
         ShowWindow(GetDlgItem(dlg, id), if page == 2 { SW_SHOW } else { SW_HIDE });
     }
     let hint = if page == 2 {
@@ -369,24 +373,51 @@ unsafe fn theme_brush(msg: u32, wp: WPARAM) -> Option<isize> {
         WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => true,
         _ => return None,
     };
-    let p = pal();
     let dc = wp as HDC;
-    let bg = if field { p.active } else { p.bg };
-    SetTextColor(dc, p.text);
+    let bg = if field { Element::SettingsField.color() } else { Element::SettingsBg.color() };
+    SetTextColor(dc, Element::SettingsText.color());
     SetBkColor(dc, bg);
     SetDCBrushColor(dc, bg);
     Some(GetStockObject(DC_BRUSH) as isize)
 }
 
+const DIALOG_FONT: *const u16 = windows_sys::w!("WinRustDialogFont");
+
+unsafe fn dialog_font(dlg: HWND) {
+    unsafe extern "system" fn set(child: HWND, font: LPARAM) -> i32 {
+        SendMessageW(child, WM_SETFONT, font as usize, 0);
+        1
+    }
+    let mut logfont: LOGFONTW = zeroed();
+    let current = SendMessageW(dlg, WM_GETFONT, 0, 0);
+    if current == 0 || GetObjectW(current as _, size_of::<LOGFONTW>() as i32, (&mut logfont as *mut LOGFONTW).cast()) == 0 { return; }
+    let face = wide(ui_face());
+    if logfont.lfFaceName.starts_with(&face) { return; }
+    logfont.lfFaceName.fill(0);
+    logfont.lfFaceName[..face.len()].copy_from_slice(&face);
+    let font = CreateFontIndirectW(&logfont);
+    if font.is_null() { return; }
+    let old = GetPropW(dlg,DIALOG_FONT);
+    if SetPropW(dlg,DIALOG_FONT,font) == 0 { DeleteObject(font); return; }
+    SendMessageW(dlg, WM_SETFONT, font as usize, 0);
+    EnumChildWindows(dlg, Some(set), font as isize);
+    if !old.is_null() { DeleteObject(old); }
+}
+
+unsafe fn release_font(dlg: HWND) {
+    let font = RemovePropW(dlg,DIALOG_FONT);
+    if !font.is_null() { DeleteObject(font); }
+}
+
 unsafe fn restyle_dialog(dlg: HWND) {
+    dialog_font(dlg);
     i18n::style::apply_frame(dlg);
-    let p = pal();
     for id in [OPTIONS, TIMES, theme::LIST, DISPLAYS] {
         let list = GetDlgItem(dlg, id);
         if !list.is_null() {
-            SendMessageW(list, LVM_SETBKCOLOR, 0, p.bg as isize);
-            SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, p.bg as isize);
-            SendMessageW(list, LVM_SETTEXTCOLOR, 0, p.text as isize);
+            SendMessageW(list, LVM_SETBKCOLOR, 0, Element::SettingsList.color() as isize);
+            SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, Element::SettingsList.color() as isize);
+            SendMessageW(list, LVM_SETTEXTCOLOR, 0, Element::SettingsRows.color() as isize);
         }
     }
     RedrawWindow(dlg, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
@@ -436,13 +467,14 @@ unsafe extern "system" fn time_editor(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
             IDCANCEL => { EndDialog(dlg, IDCANCEL as isize); }
             _ => return 0,
         },
+        WM_NCDESTROY => { release_font(dlg); return 0; }
         WM_CLOSE => { EndDialog(dlg, IDCANCEL as isize); }
         _ => return 0,
     }
     1
 }
 
-unsafe fn set_cell(list: HWND, row: usize, column: i32, text: &str) {
+pub(super) unsafe fn set_cell(list: HWND, row: usize, column: i32, text: &str) {
     let mut value = wide(text);
     let item = LVITEMW { iSubItem: column, pszText: value.as_mut_ptr(), ..zeroed() };
     SendMessageW(list, LVM_SETITEMTEXTW, row, &item as *const _ as _);
@@ -471,6 +503,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
     if let Some(brush) = theme_brush(msg, wp) { return brush; }
     if msg == i18n::style::msg() {
         i18n::style::reload();
+        theme::sync(dlg);
         restyle_dialog(dlg);
         return 1;
     }
@@ -493,7 +526,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 SetWindowTextW(dlg, wide("Настройки WinRust").as_ptr());
                 for (id, text) in [
                     (1001, "Тип"),
-                    (127, "Палитра"),
+                    (127, "Палитра"), (145, "Шрифт"), (147, "Углы"), (149, "Цвета для"), (151, "По умолчанию"), (152, "Режим"),
                     (130, "Изменить цвет..."),
                     (132, "Край"),
                     (1002, "Высота панели"),
@@ -588,7 +621,9 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
             if hdr.idFrom == theme::LIST as usize {
                 match hdr.code {
                     NM_CUSTOMDRAW => return theme::draw(dlg, lp),
-                    NM_DBLCLK => theme::edit(dlg, (*(lp as *const NMITEMACTIVATE)).iItem),
+                    LVN_ITEMCHANGED => theme::selection_changed(dlg),
+                    NM_DBLCLK if (*(lp as *const NMITEMACTIVATE)).iItem >= 0 => { PostMessageW(dlg, WM_COMMAND, theme::EDIT as usize, 0); }
+                    LVN_KEYDOWN if (*(lp as *const NMLVKEYDOWN)).wVKey == VK_F2 => { PostMessageW(dlg, WM_COMMAND, theme::EDIT as usize, 0); }
                     _ => {}
                 }
                 return 0;
@@ -654,7 +689,8 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                         move_to(bar, index);
                     }
                 }
-                theme::PRESET if notification == CBN_SELCHANGE => theme::select(dlg),
+                theme::PRESET | theme::FONT | theme::CORNERS | theme::GROUP | theme::MODE if notification == CBN_SELCHANGE => theme::select(dlg, id),
+                theme::RESET => theme::reset(dlg),
                 theme::EDIT => {
                     let row = SendDlgItemMessageW(dlg, theme::LIST, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as _) as i32;
                     theme::edit(dlg, row);
@@ -685,6 +721,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
             DestroyWindow(dlg);
         }
         WM_NCDESTROY => {
+            release_font(dlg);
             DIALOG.set(null_mut());
             return 0;
         }

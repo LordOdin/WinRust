@@ -41,14 +41,10 @@ use windows_sys::Win32::{
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
-const GOOD: u32 = rgb(110, 200, 120);
-const BAD: u32 = rgb(255, 99, 97);
 const WM_DONE: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported by windows-sys under the enabled features
 
-const fn rgb(r: u8, g: u8, b: u8) -> u32 {
-    r as u32 | (g as u32) << 8 | (b as u32) << 16
-}
+
 
 /// A text in both languages for static tables: `.get()` picks the current one.
 #[derive(Clone, Copy)]

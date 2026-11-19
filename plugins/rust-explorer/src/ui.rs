@@ -124,9 +124,7 @@ pub fn dark_title(h: HWND) {
         let set = |attr: u32, v: i32| { DwmSetWindowAttribute(h, attr, &v as *const _ as _, 4); };
         set(20, 1); // immersive dark mode
         set(33, if winrust_common::style::style().square() { 1 } else { 2 }); // round corners, square in the terminal and tiling styles
-        set(35, pal().bg as i32); // caption
-        set(36, pal().text as i32); // caption text
-        set(34, pal().line as i32); // border
+        winrust_common::style::apply_frame(h);
     }
 }
 
@@ -170,9 +168,17 @@ pub fn style_list(list: HWND) {
         let hdr = SendMessageW(list, LVM_GETHEADER, 0, 0) as HWND;
         SetWindowTheme(hdr, w("DarkMode_ItemsView").as_ptr(), ptr::null());
         for (m, c) in [(LVM_SETBKCOLOR, listbg()), (LVM_SETTEXTBKCOLOR, listbg()), (LVM_SETTEXTCOLOR, pal().text)] { SendMessageW(list, m, 0, c as isize); }
-        SendMessageW(list, WM_SETFONT, font(14, 400, ui_face()) as usize, 1);
-        row_height(list, true);
-        SetWindowSubclass(list, Some(list_sub), 1, 0); // paints the column header (the theme alone leaves it dim)
+        let mut old_font = 0;
+        if windows_sys::Win32::UI::Shell::GetWindowSubclass(list, Some(list_sub), 1, &mut old_font) == 0 {
+            row_height(list, true);
+        }
+        let new_font = font(14, 400, ui_face()) as usize;
+        if SetWindowSubclass(list, Some(list_sub), 1, new_font) != 0 {
+            SendMessageW(list, WM_SETFONT, new_font, 1);
+            if old_font != 0 { DeleteObject(old_font as HGDIOBJ); }
+        } else {
+            DeleteObject(new_font as HGDIOBJ);
+        }
     }
 }
 
@@ -312,7 +318,12 @@ unsafe fn redraw_row(list: HWND, i: isize) {
 
 /// Column header, drawn by hand: bar colour, white / dim title, a sort arrow on the sorted column. The header reports its
 /// custom draw to its parent, the list, so the hook sits on the list.
-unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id: usize, _data: usize) -> LRESULT {
+unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id: usize, owned_font: usize) -> LRESULT {
+    if m == WM_NCDESTROY {
+        let result = DefSubclassProc(h, m, wp, lp);
+        if owned_font != 0 { DeleteObject(owned_font as HGDIOBJ); }
+        return result;
+    }
     if m == WM_MOUSEMOVE {
         // hover row for list_draw
         let mut ht: LVHITTESTINFO = std::mem::zeroed();

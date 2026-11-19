@@ -202,6 +202,11 @@ fn main() {
 
     let a = app.clone();
     let _raw = nwg::bind_raw_event_handler(&app.win.handle, 0x10000, move |hwnd, msg, w, l| -> Option<isize> {
+        if msg == winrust_common::style::msg() {
+            winrust_common::style::reload();
+            a.apply_theme();
+            return Some(0);
+        }
         match msg {
             WM_PAINT => {
                 a.paint(hwnd);

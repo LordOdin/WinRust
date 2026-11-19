@@ -44,7 +44,7 @@ impl Preferences {
     fn decode(bits: u32) -> Self {
         let index = ((bits >> 2) & 3) as usize;
         // Layouts saved before docking and palettes were separated inherit the old geometry.
-        let legacy = i18n::style::style();
+        let legacy = i18n::style::legacy_style();
         let separate = bits & (1 << 18) != 0;
         Self {
             dock: if separate {
@@ -363,7 +363,42 @@ unsafe fn request_time_edit(dlg: HWND, row: i32) {
     }
 }
 
+unsafe fn theme_brush(msg: u32, wp: WPARAM) -> Option<isize> {
+    let field = match msg {
+        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC => false,
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => true,
+        _ => return None,
+    };
+    let p = pal();
+    let dc = wp as HDC;
+    let bg = if field { p.active } else { p.bg };
+    SetTextColor(dc, p.text);
+    SetBkColor(dc, bg);
+    SetDCBrushColor(dc, bg);
+    Some(GetStockObject(DC_BRUSH) as isize)
+}
+
+unsafe fn restyle_dialog(dlg: HWND) {
+    i18n::style::apply_frame(dlg);
+    let p = pal();
+    for id in [OPTIONS, TIMES, theme::LIST, DISPLAYS] {
+        let list = GetDlgItem(dlg, id);
+        if !list.is_null() {
+            SendMessageW(list, LVM_SETBKCOLOR, 0, p.bg as isize);
+            SendMessageW(list, LVM_SETTEXTBKCOLOR, 0, p.bg as isize);
+            SendMessageW(list, LVM_SETTEXTCOLOR, 0, p.text as isize);
+        }
+    }
+    RedrawWindow(dlg, null(), null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+}
+
 unsafe extern "system" fn time_editor(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> isize {
+    if let Some(brush) = theme_brush(msg, wp) { return brush; }
+    if msg == i18n::style::msg() {
+        i18n::style::reload();
+        restyle_dialog(dlg);
+        return 1;
+    }
     match msg {
         WM_INITDIALOG => {
             let Some(&t) = timing::ALL.get(lp as usize) else { return 0 };
@@ -375,6 +410,7 @@ unsafe extern "system" fn time_editor(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
             SetDlgItemTextW(dlg, IDCANCEL, wide(t!("Отмена", "Cancel")).as_ptr());
             SendDlgItemMessageW(dlg, TIME_VALUE, EM_SETLIMITTEXT, 31, 0);
             SetDlgItemInt(dlg, TIME_VALUE, t.value(), 0);
+            restyle_dialog(dlg);
             SetFocus(GetDlgItem(dlg, TIME_VALUE));
             SendDlgItemMessageW(dlg, TIME_VALUE, EM_SETSEL, 0, -1);
             return 0;
@@ -432,6 +468,12 @@ unsafe fn edit_time(dlg: HWND, row: usize) {
 }
 
 unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> isize {
+    if let Some(brush) = theme_brush(msg, wp) { return brush; }
+    if msg == i18n::style::msg() {
+        i18n::style::reload();
+        restyle_dialog(dlg);
+        return 1;
+    }
     match msg {
         WM_INITDIALOG => {
             DIALOG.set(dlg);
@@ -531,6 +573,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 ],
                 false,
             );
+            restyle_dialog(dlg);
             update_displays(dlg);
             SetTimer(dlg, 1, 1000, None);
         }

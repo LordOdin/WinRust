@@ -35,6 +35,27 @@ pub struct Theme {
     pub bad: Rgb,
 }
 
+pub fn winrust_theme() -> Theme {
+    let p = winrust_common::style::pal();
+    let rgb = |c: u32| Rgb(c as u8, (c >> 8) as u8, (c >> 16) as u8);
+    let bg = rgb(p.bg);
+    let accent = rgb(p.accent);
+    let dark = 299 * bg.0 as u32 + 587 * bg.1 as u32 + 114 * (bg.2 as u32) < 128000;
+    Theme {
+        dark, bg, accent,
+        nav: bg.lerp(rgb(p.hover), 0.5),
+        panel: rgb(p.hover),
+        text: rgb(p.text),
+        dim: rgb(p.dim),
+        border: rgb(p.line),
+        sel: rgb(p.active),
+        hover: rgb(p.hover),
+        heat0: bg.lerp(accent, 0.10),
+        heat1: bg.lerp(accent, 0.48),
+        ..theme(dark)
+    }
+}
+
 pub fn theme(dark: bool) -> Theme {
     if dark {
         Theme {

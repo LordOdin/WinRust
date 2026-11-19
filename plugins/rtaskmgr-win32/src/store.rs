@@ -24,7 +24,7 @@ pub struct Settings {
     pub pos: (i32, i32),
     pub size: (u32, u32),
     pub to_tray: bool,
-    pub theme: u8, // 0 светлая, 1 тёмная, 2 как в системе
+    pub theme: u8, // 0 светлая, 1 тёмная, 2 WinRust, 3 как в системе
     pub etw: bool, // сеть по процессам (нужен администратор), по умолчанию выключено
     pub gpu_temp_always: bool, // читать температуру GPU и вне страницы GPU (может будить видеокарту ноутбука)
     pub rules: Vec<Rule>,
@@ -65,7 +65,7 @@ pub fn parse(text: &str) -> Settings {
             "w" => s.size.0 = v.parse().unwrap_or(s.size.0),
             "h" => s.size.1 = v.parse().unwrap_or(s.size.1),
             "to_tray" => s.to_tray = v == "1",
-            "theme" => s.theme = v.parse().unwrap_or(2).min(2),
+            "theme" => s.theme = v.parse().unwrap_or(2).min(3),
             "etw" => s.etw = v == "1",
             "gputemp" => s.gpu_temp_always = v == "1",
             "rule" => {

@@ -831,7 +831,7 @@ impl App {
             MI::Item(t!("Запустить новую задачу", "Run new task"), Act::RunTask),
             MI::Item(t!("Экспорт в CSV", "Export to CSV"), Act::Export),
             MI::Sep,
-            MI::Sub(t!("Тема", "Theme"), vec![MI::Check(t!("Светлая", "Light"), Act::SetTheme(0), d.cfg.theme == 0), MI::Check(t!("Тёмная", "Dark"), Act::SetTheme(1), d.cfg.theme == 1), MI::Check(t!("Системная", "System"), Act::SetTheme(2), d.cfg.theme == 2)]),
+            MI::Sub(t!("Тема", "Theme"), vec![MI::Check(t!("Светлая", "Light"), Act::SetTheme(0), d.cfg.theme == 0), MI::Check(t!("Тёмная", "Dark"), Act::SetTheme(1), d.cfg.theme == 1), MI::Check("WinRust", Act::SetTheme(2), d.cfg.theme == 2), MI::Check(t!("Системная", "System"), Act::SetTheme(3), d.cfg.theme == 3)]),
             MI::Item(t!("Параметры", "Settings"), Act::Go(Page::Settings)),
         ]
         .into_iter()
@@ -1158,15 +1158,13 @@ impl App {
 
     // ================= окно, тема, настройки =================
     pub fn apply_theme(&self) {
-        let dark = {
-            let d = self.data.borrow();
-            match d.cfg.theme {
-                0 => false,
-                1 => true,
-                _ => sys::system_dark(),
-            }
+        let th = match self.data.borrow().cfg.theme {
+            0 => theme(false),
+            1 => theme(true),
+            3 => theme(sys::system_dark()),
+            _ => crate::ui::winrust_theme(),
         };
-        let th = theme(dark);
+        let dark = th.dark;
         self.ui.borrow_mut().th = th;
         if let Some(h) = self.win.handle.hwnd() {
             sys::set_dark_titlebar(h, dark);

@@ -41,12 +41,6 @@ use windows_sys::Win32::{
     UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
 };
 
-const BG: u32 = rgb(22, 19, 18);
-const PANEL: u32 = rgb(36, 31, 29);
-const BORDER: u32 = rgb(60, 51, 47);
-const TEXT: u32 = rgb(255, 255, 255);
-const DIM: u32 = rgb(166, 152, 145);
-const ACCENT: u32 = rgb(222, 98, 42); // rust orange
 const GOOD: u32 = rgb(110, 200, 120);
 const BAD: u32 = rgb(255, 99, 97);
 const WM_DONE: u32 = WM_APP + 1;
@@ -196,7 +190,7 @@ fn main() {
         let title = wide("WinRust");
         let hwnd = CreateWindowExW(0, cls.as_ptr(), title.as_ptr(), style | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, null_mut(), null_mut(), hi, null());
         DwmSetWindowAttribute(hwnd, 20, &1i32 as *const i32 as *const _, 4); // dark title bar
-        DwmSetWindowAttribute(hwnd, 35, &BG as *const u32 as *const _, 4); // caption colour = window background (Win11; ignored on Win10)
+        i18n::style::apply_frame(hwnd);
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
             TranslateMessage(&m);

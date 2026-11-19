@@ -16,9 +16,7 @@ use windows_sys::Win32::{
 const WM_DONE: u32 = WM_APP + 1; // lparam = Box<Result<Tree, String>>
 const DRIVE_FIXED: u32 = 3;
 const MAX_CELLS: usize = 300;
-const BG: u32 = rgb(22, 19, 18);
-const DIM: u32 = rgb(166, 152, 145);
-const ACCENT: u32 = rgb(222, 98, 42);
+use winrust_common::style;
 
 const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
@@ -158,7 +156,7 @@ unsafe fn paint(hwnd: HWND) {
                 FillRect(mem, r, b);
                 DeleteObject(b as _);
             };
-            fill(&rc, BG);
+            fill(&rc, style::pal().bg);
             SelectObject(mem, a.font as _);
             SetBkMode(mem, TRANSPARENT as _);
             let text = |s: &str, mut r: RECT, c: u32, fmt: u32| {
@@ -198,8 +196,8 @@ unsafe fn paint(hwnd: HWND) {
                     None => "Click: open folder / show file    Right click, Backspace: up    Tab: next drive    F5: rescan".into(),
                 };
             }
-            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, ACCENT, one);
-            text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, DIM, one);
+            text(&head, RECT { left: (12.0 * k) as i32, top: 0, right: w - 12, bottom: top }, style::pal().accent, one);
+            text(&foot, RECT { left: (12.0 * k) as i32, top: h - bot, right: w - 12, bottom: h }, style::pal().dim, one);
         });
         BitBlt(dc, 0, 0, w, h, mem, 0, 0, SRCCOPY);
         SelectObject(mem, old);
@@ -221,8 +219,15 @@ fn up(hwnd: HWND) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
+        if msg == style::msg() {
+            style::reload();
+            style::apply_frame(hwnd);
+            InvalidateRect(hwnd, std::ptr::null(), 0);
+            return 0;
+        }
         match msg {
             WM_CREATE => {
+                style::apply_frame(hwnd);
                 let dpi = GetDpiForSystem() as i32;
                 let f = CreateFontW(-(15 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, wide("Segoe UI").as_ptr());
                 APP.with_borrow_mut(|a| (a.dpi, a.font) = (dpi, f as isize));

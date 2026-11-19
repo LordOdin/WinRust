@@ -1,10 +1,14 @@
-//! The UI style shared by the WinRust programs: %ProgramData%\WinRust\style.txt holds its name (the topbar gear menu writes it).
-//! Programs re-read it at most once a second and repaint at once on the broadcast `set_style` sends (`msg()`).
+//! Per-user theme shared by the WinRust programs. Open windows refresh on WinRustStyleChanged.
 use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering::Relaxed},
+    cell::Cell,
+    io,
+    mem::size_of_val,
+    ptr::null_mut,
+    sync::atomic::{AtomicU32, Ordering::Relaxed},
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, PostMessageW, RegisterWindowMessageW};
+use windows_sys::Win32::{Foundation::ERROR_SUCCESS, System::Registry::*};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Style {
@@ -38,43 +42,113 @@ impl Style {
     }
 }
 
-static CUR: AtomicU8 = AtomicU8::new(u8::MAX); // index into ALL; MAX = not read yet
-static READ_AT: AtomicU64 = AtomicU64::new(0); // when the file was last read, ms since the epoch
-
-fn file() -> Option<PathBuf> {
-    std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("WinRust").join("style.txt"))
+#[derive(Clone, Copy)]
+pub struct Theme {
+    pub selected: usize,
+    pub base: usize,
+    pub custom: [u32; 7],
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+fn colors(p: &Pal) -> [u32; 7] {
+    [p.bg, p.line, p.hover, p.active, p.accent, p.text, p.dim]
 }
 
-fn store(s: Style) {
-    CUR.store(ALL.iter().position(|&v| v == s).unwrap_or(0) as u8, Relaxed);
-    READ_AT.store(now_ms(), Relaxed);
+impl Theme {
+    fn read() -> Self {
+        let mut data = [0u32; 9];
+        let mut size = size_of_val(&data) as u32;
+        let ok = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                windows_sys::w!(r"Software\WinRust\Topbar"),
+                windows_sys::w!("BarThemeV1"),
+                RRF_RT_REG_BINARY,
+                null_mut(),
+                data.as_mut_ptr() as _,
+                &mut size,
+            )
+        };
+        if ok != ERROR_SUCCESS || size != 36 || data[0] > 4 || data[1] > 3 || data[2..].iter().any(|&c| c > 0xffffff) {
+            let legacy = legacy_style();
+            let base = ALL.iter().position(|&s| s == legacy).unwrap_or(0);
+            return Self {
+                selected: base,
+                base,
+                custom: colors(&PALS[base]),
+            };
+        }
+        Self {
+            selected: data[0] as usize,
+            base: data[1] as usize,
+            custom: data[2..].try_into().unwrap(),
+        }
+    }
+
+    pub fn colors(self) -> [u32; 7] {
+        if self.selected == CUSTOM { self.custom } else { colors(&PALS[self.selected]) }
+    }
+
+    pub fn save(self) -> io::Result<()> {
+        if self.selected > CUSTOM || self.base >= ALL.len() || self.custom.iter().any(|&color| color > 0xffffff) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid theme"));
+        }
+        let mut data = [0u32; 9];
+        data[0] = self.selected as u32;
+        data[1] = self.base as u32;
+        data[2..].copy_from_slice(&self.custom);
+        let err = unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                windows_sys::w!(r"Software\WinRust\Topbar"),
+                windows_sys::w!("BarThemeV1"),
+                REG_BINARY,
+                data.as_ptr().cast(),
+                size_of_val(&data) as u32,
+            )
+        };
+        if err != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(err as i32));
+        }
+        CACHE.set(Some((Instant::now(), self)));
+        unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+        Ok(())
+    }
 }
 
-/// Reads the file again now (on the "style changed" broadcast).
+pub fn legacy_style() -> Style {
+    let file = std::env::var_os("ProgramData").map(|p| std::path::PathBuf::from(p).join("WinRust").join("style.txt"));
+    Style::parse(&file.and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default())
+}
+
+pub const CUSTOM: usize = ALL.len();
+thread_local! { static CACHE: Cell<Option<(Instant, Theme)>> = const { Cell::new(None) }; }
+
 pub fn reload() {
-    store(Style::parse(&file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default()));
+    CACHE.set(None);
 }
 
-/// The current style. The file is read again at most once a second, so a program that missed the broadcast still follows.
+pub fn theme() -> Theme {
+    if let Some((at, value)) = CACHE.get() {
+        if at.elapsed() < Duration::from_secs(1) {
+            return value;
+        }
+    }
+    let value = Theme::read();
+    CACHE.set(Some((Instant::now(), value)));
+    value
+}
+
 pub fn style() -> Style {
-    if CUR.load(Relaxed) == u8::MAX || now_ms().saturating_sub(READ_AT.load(Relaxed)) > 1000 {
-        reload();
-    }
-    ALL[CUR.load(Relaxed) as usize % ALL.len()]
+    let t = theme();
+    ALL[if t.selected == CUSTOM { t.base } else { t.selected }]
 }
 
-/// Switches this process, writes the choice and tells the other WinRust windows to repaint in it.
 pub fn set_style(s: Style) {
-    store(s);
-    if let Some(f) = file() {
-        let _ = std::fs::create_dir_all(f.parent().unwrap());
-        let _ = std::fs::write(f, s.name());
+    let _ = Theme {
+        selected: ALL.iter().position(|&v| v == s).unwrap_or(0),
+        ..theme()
     }
-    unsafe { PostMessageW(HWND_BROADCAST, msg(), 0, 0) };
+    .save();
 }
 
 /// The broadcast message a window gets when the style changed: call `reload()` and repaint.
@@ -109,17 +183,69 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
 /// In the order of `ALL`.
 pub const PALS: [Pal; 4] = [
     // normal: Windows 11 blue
-    Pal { bg: rgb(24, 30, 44), line: rgb(44, 52, 72), hover: rgb(40, 48, 68), active: rgb(52, 61, 84), accent: rgb(76, 194, 255), text: rgb(255, 255, 255), dim: rgb(150, 158, 175) },
+    Pal {
+        bg: rgb(24, 30, 44),
+        line: rgb(44, 52, 72),
+        hover: rgb(40, 48, 68),
+        active: rgb(52, 61, 84),
+        accent: rgb(76, 194, 255),
+        text: rgb(255, 255, 255),
+        dim: rgb(150, 158, 175),
+    },
     // terminal: green on black
-    Pal { bg: rgb(10, 15, 10), line: rgb(40, 72, 40), hover: rgb(20, 40, 20), active: rgb(28, 56, 28), accent: rgb(91, 215, 91), text: rgb(207, 232, 207), dim: rgb(100, 145, 100) },
+    Pal {
+        bg: rgb(10, 15, 10),
+        line: rgb(40, 72, 40),
+        hover: rgb(20, 40, 20),
+        active: rgb(28, 56, 28),
+        accent: rgb(91, 215, 91),
+        text: rgb(207, 232, 207),
+        dim: rgb(100, 145, 100),
+    },
     // dock: graphite with violet
-    Pal { bg: rgb(27, 29, 34), line: rgb(50, 53, 62), hover: rgb(42, 45, 53), active: rgb(52, 55, 66), accent: rgb(167, 139, 250), text: rgb(255, 255, 255), dim: rgb(154, 160, 170) },
+    Pal {
+        bg: rgb(27, 29, 34),
+        line: rgb(50, 53, 62),
+        hover: rgb(42, 45, 53),
+        active: rgb(52, 55, 66),
+        accent: rgb(167, 139, 250),
+        text: rgb(255, 255, 255),
+        dim: rgb(154, 160, 170),
+    },
     // tiling: dark with amber
-    Pal { bg: rgb(17, 19, 23), line: rgb(40, 44, 52), hover: rgb(30, 34, 41), active: rgb(38, 43, 52), accent: rgb(229, 192, 123), text: rgb(215, 218, 224), dim: rgb(110, 117, 130) },
+    Pal {
+        bg: rgb(17, 19, 23),
+        line: rgb(40, 44, 52),
+        hover: rgb(30, 34, 41),
+        active: rgb(38, 43, 52),
+        accent: rgb(229, 192, 123),
+        text: rgb(215, 218, 224),
+        dim: rgb(110, 117, 130),
+    },
 ];
 
-pub fn pal() -> &'static Pal {
-    &PALS[ALL.iter().position(|&s| s == style()).unwrap_or(0)]
+pub fn pal() -> Pal {
+    let [bg, line, hover, active, accent, text, dim] = theme().colors();
+    Pal {
+        bg,
+        line,
+        hover,
+        active,
+        accent,
+        text,
+        dim,
+    }
+}
+
+/// Apply the saved palette to a Win32 nonclient frame (unsupported DWM attributes are ignored).
+pub unsafe fn apply_frame(hwnd: windows_sys::Win32::Foundation::HWND) {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DwmSetWindowAttribute};
+    let p = pal();
+    for (attr, color) in [(DWMWA_CAPTION_COLOR, p.bg), (DWMWA_TEXT_COLOR, p.text), (DWMWA_BORDER_COLOR, p.line)] {
+        unsafe {
+            DwmSetWindowAttribute(hwnd, attr as u32, (&color as *const u32).cast(), 4);
+        }
+    }
 }
 
 /// The UI font of the current style.

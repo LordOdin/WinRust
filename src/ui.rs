@@ -176,19 +176,21 @@ pub(crate) fn dialog_boxes(w: f32) -> (Box4, Box4, Box4) {
 
 /// A button: `kind` 0 = primary (accent), 1 = secondary (outline), 2 = danger (outline, red text), 3 = disabled.
 pub(crate) unsafe fn button(ui: &Ui, b: Box4, label: &str, kind: u8, hot: bool) {
+    let palette = i18n::style::pal();
     let (fill, line, fg) = match kind {
-        0 => (ACCENT, ACCENT, rgb(255, 255, 255)),
-        1 => (PANEL, BORDER, TEXT),
-        2 => (PANEL, BORDER, BAD),
-        _ => (PANEL, lerp(PANEL, BORDER, 0.6), lerp(DIM, PANEL, 0.35)),
+        0 => (palette.accent, palette.accent, rgb(255, 255, 255)),
+        1 => (palette.active, palette.line, palette.text),
+        2 => (palette.active, palette.line, BAD),
+        _ => (palette.active, lerp(palette.active, palette.line, 0.6), lerp(palette.dim, palette.active, 0.35)),
     };
-    let fill = if hot && kind != 3 { lerp(fill, TEXT, if kind == 0 { 0.14 } else { 0.07 }) } else { fill };
+    let fill = if hot && kind != 3 { lerp(fill, palette.text, if kind == 0 { 0.14 } else { 0.07 }) } else { fill };
     let line = if hot && kind == 2 { BAD } else if kind == 0 { fill } else { line };
     ui.round(b, 8.0, fill, line);
     ui.text(label, b, 13.5, 600, fg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 pub(crate) unsafe fn paint(hwnd: HWND) {
+    let palette = i18n::style::pal();
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = BeginPaint(hwnd, &mut ps);
     let mut rc: RECT = zeroed();
@@ -198,7 +200,7 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let bmp = CreateCompatibleBitmap(hdc, cw, ch);
     let ob = SelectObject(mem, bmp);
     let s = GetDeviceCaps(hdc, LOGPIXELSX as i32) as f32 / 96.0;
-    let bgb = CreateSolidBrush(BG);
+    let bgb = CreateSolidBrush(palette.bg);
     FillRect(mem, &rc, bgb);
     DeleteObject(bgb);
     let mut g = null_mut::<GpGraphics>();
@@ -215,19 +217,19 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     let n_inst = ready().filter(|&i| INSTALLED[i].load(Relaxed)).count();
 
     // header: logo + name
-    ui.shape([0.0, 0.0, w, 3.0], 0.0, argb(ACCENT, 255));
+    ui.shape([0.0, 0.0, w, 3.0], 0.0, argb(palette.accent, 255));
     let logo = [M, 30.0, M + 60.0, 90.0];
-    ui.round(logo, 16.0, ACCENT, ACCENT);
-    let inner = lerp(ACCENT, BG, 0.12);
+    ui.round(logo, 16.0, palette.accent, palette.accent);
+    let inner = lerp(palette.accent, palette.bg, 0.12);
     ui.round([logo[0] + 4.0, logo[1] + 4.0, logo[2] - 4.0, logo[3] - 4.0], 13.0, inner, inner);
     ui.text("W", [logo[0], logo[1] - 2.0, logo[2], logo[3]], 32.0, 900, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     let tx = logo[2] + 18.0;
-    ui.text("WinRust", [tx, 28.0, w - M, 64.0], 30.0, 700, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    ui.text(&tf!("Оболочка Windows на Rust  \u{00B7}  установлено {n_inst} из {N_READY}", "A Windows shell in Rust  \u{00B7}  {n_inst} of {N_READY} installed"), [tx, 64.0, w - M, 88.0], 13.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    ui.text(t!("ВХОДИТ В СОСТАВ", "INCLUDED"), [M + 4.0, LIST_TOP - 26.0, w - M, LIST_TOP - 6.0], 11.0, 700, DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text("WinRust", [tx, 28.0, w - M, 64.0], 30.0, 700, palette.text, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text(&tf!("Оболочка Windows на Rust  \u{00B7}  установлено {n_inst} из {N_READY}", "A Windows shell in Rust  \u{00B7}  {n_inst} of {N_READY} installed"), [tx, 64.0, w - M, 88.0], 13.0, 400, palette.dim, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    ui.text(t!("ВХОДИТ В СОСТАВ", "INCLUDED"), [M + 4.0, LIST_TOP - 26.0, w - M, LIST_TOP - 6.0], 11.0, 700, palette.dim, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
     // component list
-    ui.round([M, LIST_TOP, w - M, LIST_TOP + LIST_H], 12.0, PANEL, BORDER);
+    ui.round([M, LIST_TOP, w - M, LIST_TOP + LIST_H], 12.0, palette.active, palette.line);
     let pos = chosen().position(|i| i == job); // where install_all is now
     let n_sel = chosen().count();
     let n_sel_inst = chosen().filter(|&i| INSTALLED[i].load(Relaxed)).count();
@@ -239,68 +241,68 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         let working = busy && (job == i || (job == n && installed));
         let queued = busy && !installed && SELECTED[i].load(Relaxed) && (job == STARTING || ready().position(|j| j == job).is_some_and(|q| k > q));
         if k > 0 {
-            ui.shape([r[0] + 12.0, r[1], r[2] - 12.0, r[1] + 1.0 / s], 0.0, argb(BORDER, 255));
+            ui.shape([r[0] + 12.0, r[1], r[2] - 12.0, r[1] + 1.0 / s], 0.0, argb(palette.line, 255));
         }
         if working {
-            let t = lerp(PANEL, ACCENT, 0.10);
+            let t = lerp(palette.active, palette.accent, 0.10);
             ui.round([r[0], r[1] + 3.0, r[2], r[3] - 3.0], 9.0, t, t);
         }
         let (cb, _) = check_box(k, w);
         let sel = SELECTED[i].load(Relaxed);
-        ui.round(cb, 5.0, if sel { ACCENT } else { PANEL }, if sel { ACCENT } else { lerp(BORDER, TEXT, if hot(ID_CHECK + i) { 0.4 } else { 0.0 }) });
+        ui.round(cb, 5.0, if sel { palette.accent } else { palette.active }, if sel { palette.accent } else { lerp(palette.line, palette.text, if hot(ID_CHECK + i) { 0.4 } else { 0.0 }) });
         if sel {
             ui.text_in("\u{E73E}", cb, 11.0, 700, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
         }
         let tile = [r[0] + 42.0, r[1] + 13.0, r[0] + 78.0, r[1] + 49.0];
         let lit = installed || working;
-        let tint = if lit { lerp(PANEL, ACCENT, 0.20) } else { lerp(PANEL, TEXT, 0.06) };
+        let tint = if lit { lerp(palette.active, palette.accent, 0.20) } else { lerp(palette.active, palette.text, 0.06) };
         ui.round(tile, 9.0, tint, tint);
-        ui.text_in(p.glyph, tile, 16.0, 400, if lit { ACCENT } else { TEXT }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
+        ui.text_in(p.glyph, tile, 16.0, 400, if lit { palette.accent } else { palette.text }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
 
         let (pill, pc) = if working {
-            (if job == n { t!("Удаление…", "Removing…") } else { t!("Установка…", "Installing…") }, ACCENT)
+            (if job == n { t!("Удаление…", "Removing…") } else { t!("Установка…", "Installing…") }, palette.accent)
         } else if installed {
             (t!("Установлен", "Installed"), GOOD)
         } else if queued {
-            (t!("В очереди", "Queued"), DIM)
+            (t!("В очереди", "Queued"), palette.dim)
         } else {
-            (t!("Не установлен", "Not installed"), DIM)
+            (t!("Не установлен", "Not installed"), palette.dim)
         };
         let pr = r[2] - 14.0 - 32.0 - 10.0;
         let pw = ui.width(pill, 11.5, 600) + 18.0;
         let pb = [pr - pw, r[1] + 21.0, pr, r[1] + 41.0];
-        let ptint = lerp(PANEL, pc, 0.16);
+        let ptint = lerp(palette.active, pc, 0.16);
         ui.round(pb, 10.0, ptint, ptint);
         ui.text(pill, pb, 11.5, 600, pc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
         let nx = tile[2] + 14.0;
-        ui.text(p.name, [nx, r[1] + 11.0, pb[0] - 10.0, r[1] + 32.0], 14.5, 600, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        ui.text(p.name, [nx, r[1] + 11.0, pb[0] - 10.0, r[1] + 32.0], 14.5, 600, palette.text, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         let desc = p.desc.get();
         let short = desc.split(". ").next().unwrap_or(desc).trim_end_matches('.');
-        ui.text(short, [nx, r[1] + 32.0, pb[0] - 10.0, r[3] - 10.0], 12.0, 400, DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+        ui.text(short, [nx, r[1] + 32.0, pb[0] - 10.0, r[3] - 10.0], 12.0, 400, palette.dim, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         if let Some((_, gb)) = gear.filter(|&(gi, _)| gi == i && installed) {
             let h = hot(ID_GEAR) && !busy;
-            ui.round(gb, 8.0, if h { lerp(PANEL, TEXT, 0.08) } else { PANEL }, BORDER);
-            ui.text_in("\u{E713}", gb, 14.0, 400, if busy { DIM } else { TEXT }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
+            ui.round(gb, 8.0, if h { lerp(palette.active, palette.text, 0.08) } else { palette.active }, palette.line);
+            ui.text_in("\u{E713}", gb, 14.0, 400, if busy { palette.dim } else { palette.text }, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
         }
     }
 
     // the one button: installs everything that is missing (or updates all when nothing is)
     let mb = main_box(w);
     if busy {
-        let base = lerp(PANEL, ACCENT, 0.22);
+        let base = lerp(palette.active, palette.accent, 0.22);
         ui.round(mb, 12.0, base, base);
         let done = if job == n { 0.0 } else { pos.map_or(0.0, |q| (q as f32 + 0.5) / n_sel as f32) };
         if done > 0.0 {
-            ui.shape([mb[0], mb[1], mb[0] + (mb[2] - mb[0]) * done, mb[3]], 12.0, argb(ACCENT, 255));
+            ui.shape([mb[0], mb[1], mb[0] + (mb[2] - mb[0]) * done, mb[3]], 12.0, argb(palette.accent, 255));
         }
         let label = if job == n {
             t!("Удаление WinRust…", "Removing WinRust…").to_string()
         } else {
             pos.map_or(t!("Подготовка…", "Preparing…").into(), |q| tf!("Устанавливается {}  ({} из {})", "Installing {}  ({} of {})", PLUGINS[job].name, q + 1, n_sel))
         };
-        ui.text(&label, mb, 15.5, 700, TEXT, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        ui.text(&label, mb, 15.5, 700, palette.text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else {
         let all = n_sel_inst == n_sel && n_sel > 0;
         let label = if n_sel == 0 {
@@ -314,9 +316,9 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
         } else {
             tf!("Доустановить и обновить WinRust  (новых: {})", "Install and update WinRust  ({} new)", N_READY - n_inst)
         };
-        let (fill, fg) = if all || n_sel == 0 { (PANEL, if n_sel == 0 { DIM } else { TEXT }) } else { (ACCENT, rgb(255, 255, 255)) };
-        let fill = if hot(ID_MAIN) { lerp(fill, TEXT, if all { 0.07 } else { 0.14 }) } else { fill };
-        ui.round(mb, 12.0, fill, if all { BORDER } else { fill });
+        let (fill, fg) = if all || n_sel == 0 { (palette.active, if n_sel == 0 { palette.dim } else { palette.text }) } else { (palette.accent, rgb(255, 255, 255)) };
+        let fill = if hot(ID_MAIN) { lerp(fill, palette.text, if all { 0.07 } else { 0.14 }) } else { fill };
+        ui.round(mb, 12.0, fill, if all { palette.line } else { fill });
         let tw = ui.width(&label, 16.0, 700);
         let cx = (mb[0] + mb[2]) / 2.0 + 13.0;
         ui.text_in(if all { "\u{E72C}" } else { "\u{E896}" }, [cx - tw / 2.0 - 30.0, mb[1], cx - tw / 2.0 - 6.0, mb[3]], 15.0, 400, fg, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
@@ -325,14 +327,14 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
 
     // footer: status on the left, remove-all on the right
     let ft = WIN_H - FOOT_H;
-    ui.shape([M, ft, w - M, ft + 1.0 / s], 0.0, argb(BORDER, 255));
+    ui.shape([M, ft, w - M, ft + 1.0 / s], 0.0, argb(palette.line, 255));
     let (m, ok) = MSG.lock().unwrap().clone();
     let (m, dot, fg) = if busy {
-        (t!("Выполняется, не закрывайте окно…", "Working, do not close the window…").to_string(), ACCENT, DIM)
+        (t!("Выполняется, не закрывайте окно…", "Working, do not close the window…").to_string(), palette.accent, palette.dim)
     } else if m.is_empty() {
-        (t!("Перед установкой создаётся точка восстановления.", "A restore point is created before installing.").into(), DIM, DIM)
+        (t!("Перед установкой создаётся точка восстановления.", "A restore point is created before installing.").into(), palette.dim, palette.dim)
     } else if ok {
-        (m, GOOD, TEXT)
+        (m, GOOD, palette.text)
     } else {
         (m, BAD, BAD)
     };
@@ -349,16 +351,16 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     if let Some((title, text, ok_label, danger)) = dialog {
         ui.shape([0.0, 0.0, w, WIN_H + 1.0], 0.0, argb(0, 160));
         let (d, cancel, okb) = dialog_boxes(w);
-        ui.round(d, 14.0, lerp(PANEL, BG, 0.25), BORDER);
-        let accent = if danger { BAD } else { ACCENT };
+        ui.round(d, 14.0, lerp(palette.active, palette.bg, 0.25), palette.line);
+        let accent = if danger { BAD } else { palette.accent };
         let icon = [d[0] + 24.0, d[1] + 24.0, d[0] + 60.0, d[1] + 60.0];
-        let tint = lerp(PANEL, accent, 0.18);
+        let tint = lerp(palette.active, accent, 0.18);
         ui.round(icon, 18.0, tint, tint);
         ui.text_in(if danger { "\u{E7BA}" } else { "\u{E946}" }, icon, 16.0, 400, accent, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
-        ui.text(&title, [icon[2] + 14.0, d[1] + 24.0, d[2] - 24.0, d[1] + 60.0], 17.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        ui.text(&text, [d[0] + 24.0, d[1] + 76.0, d[2] - 24.0, cancel[1] - 12.0], 12.5, 400, DIM, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
+        ui.text(&title, [icon[2] + 14.0, d[1] + 24.0, d[2] - 24.0, d[1] + 60.0], 17.0, 600, palette.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        ui.text(&text, [d[0] + 24.0, d[1] + 76.0, d[2] - 24.0, cancel[1] - 12.0], 12.5, 400, palette.dim, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
         button(&ui, cancel, t!("Отмена", "Cancel"), 1, hot(ID_CANCEL));
-        let okfill = if hot(ID_OK) { lerp(accent, TEXT, 0.14) } else { accent };
+        let okfill = if hot(ID_OK) { lerp(accent, palette.text, 0.14) } else { accent };
         ui.round(okb, 8.0, okfill, okfill);
         ui.text(&ok_label, okb, 13.5, 600, rgb(255, 255, 255), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
@@ -367,23 +369,23 @@ pub(crate) unsafe fn paint(hwnd: HWND) {
     if let Some(i) = SETTINGS.get() {
         ui.shape([0.0, 0.0, w, WIN_H + 1.0], 0.0, argb(0, 160));
         let (d, _, closeb) = dialog_boxes(w);
-        ui.round(d, 14.0, lerp(PANEL, BG, 0.25), BORDER);
+        ui.round(d, 14.0, lerp(palette.active, palette.bg, 0.25), palette.line);
         let icon = [d[0] + 24.0, d[1] + 24.0, d[0] + 60.0, d[1] + 60.0];
-        let tint = lerp(PANEL, ACCENT, 0.18);
+        let tint = lerp(palette.active, palette.accent, 0.18);
         ui.round(icon, 18.0, tint, tint);
-        ui.text_in("\u{E713}", icon, 16.0, 400, ACCENT, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
-        ui.text(&tf!("Настройки {}", "{} settings", PLUGINS[i].name), [icon[2] + 14.0, d[1] + 24.0, d[2] - 24.0, d[1] + 60.0], 17.0, 600, TEXT, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        ui.text_in("\u{E713}", icon, 16.0, 400, palette.accent, DT_CENTER | DT_VCENTER | DT_SINGLELINE, "Segoe MDL2 Assets");
+        ui.text(&tf!("Настройки {}", "{} settings", PLUGINS[i].name), [icon[2] + 14.0, d[1] + 24.0, d[2] - 24.0, d[1] + 60.0], 17.0, 600, palette.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         let row = [d[0] + 24.0, d[1] + 78.0, d[2] - 24.0, d[1] + 148.0];
         let hid = od_hidden();
-        ui.round(row, 10.0, PANEL, BORDER);
-        ui.text(t!("Отключение OneDrive", "Disable OneDrive"), [row[0] + 16.0, row[1] + 10.0, row[2] - 80.0, row[1] + 32.0], 14.0, 600, TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        ui.text(t!("Значок OneDrive не показывается в топбаре (по умолчанию). Синхронизация продолжает работать.", "The OneDrive icon is not shown in the bar (default). Sync keeps working."), [row[0] + 16.0, row[1] + 32.0, row[2] - 80.0, row[3] - 6.0], 12.0, 400, DIM, DT_LEFT | DT_WORDBREAK);
+        ui.round(row, 10.0, palette.active, palette.line);
+        ui.text(t!("Отключение OneDrive", "Disable OneDrive"), [row[0] + 16.0, row[1] + 10.0, row[2] - 80.0, row[1] + 32.0], 14.0, 600, palette.text, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        ui.text(t!("Значок OneDrive не показывается в топбаре (по умолчанию). Синхронизация продолжает работать.", "The OneDrive icon is not shown in the bar (default). Sync keeps working."), [row[0] + 16.0, row[1] + 32.0, row[2] - 80.0, row[3] - 6.0], 12.0, 400, palette.dim, DT_LEFT | DT_WORDBREAK);
         let sw = switch_box(w);
-        let off = lerp(PANEL, TEXT, 0.25);
-        let track = if hid { ACCENT } else { off };
+        let off = lerp(palette.active, palette.text, 0.25);
+        let track = if hid { palette.accent } else { off };
         ui.round(sw, 12.0, track, track);
         let kx = if hid { sw[2] - 12.0 } else { sw[0] + 12.0 };
-        ui.round([kx - 8.0, sw[1] + 4.0, kx + 8.0, sw[3] - 4.0], 8.0, TEXT, TEXT);
+        ui.round([kx - 8.0, sw[1] + 4.0, kx + 8.0, sw[3] - 4.0], 8.0, palette.text, palette.text);
         button(&ui, closeb, t!("Закрыть", "Close"), 1, hot(ID_CANCEL));
     }
 
@@ -581,6 +583,12 @@ pub(crate) unsafe fn click(hwnd: HWND, id: usize) {
 }
 
 pub(crate) unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == i18n::style::msg() {
+        i18n::style::reload();
+        i18n::style::apply_frame(hwnd);
+        InvalidateRect(hwnd, null(), 0);
+        return 0;
+    }
     match msg {
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,

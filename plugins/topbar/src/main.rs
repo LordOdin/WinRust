@@ -2529,6 +2529,11 @@ unsafe fn appbar_new(hwnd: HWND) {
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == i18n::style::msg() {
+        i18n::style::reload();
+        InvalidateRect(hwnd, null(), 0);
+        return 0;
+    }
     if msg != 0 && msg == SH_MSG.get() {
         if wp == 5 && lp != 0 {
             min_rect(lp as *mut ShellHookInfo, hwnd); // HSHELL_GETMINRECT

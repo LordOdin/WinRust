@@ -105,7 +105,6 @@ const ALT_TAB: u32 = WM_APP + 11; // posted by the keyboard hook: Alt+Tab (wp 1 
 const ALT_UP: u32 = WM_APP + 12; // posted by the keyboard hook: Alt released while switching (wp 1 = Esc: cancel)
 static SWITCHING: AtomicBool = AtomicBool::new(false); // Alt+Tab switcher open (the hook thread reads it)
 static FULLSCREEN: AtomicBool = AtomicBool::new(false);
-static DESK_HIDE: AtomicBool = AtomicBool::new(false); // the desktop in front and the pointer away from the bar for 2 s
 static WIN_ALONE: AtomicBool = AtomicBool::new(false);
 static BAR: AtomicIsize = AtomicIsize::new(0); // the bar window, for the hook thread
 const SNIP: u32 = WM_APP + 13; // posted by the keyboard hook: PrtSc / Win+Shift+S with no explorer to handle them
@@ -191,7 +190,6 @@ thread_local! {
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
     static BAR_P: Cell<f32> = const { Cell::new(0.0) }; // bar slide: 0 = off screen, 1 = in place
     static BAR_T: Cell<u64> = const { Cell::new(0) };
-    static DESK_T: Cell<u64> = const { Cell::new(0) }; // last moment the bar had a reason to stay on the desktop
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
     static OLD_STATE: Cell<usize> = const { Cell::new(ABS_ALWAYSONTOP as usize) };
     static BAT: Cell<(i32, bool)> = const { Cell::new((-1, false)) }; // (percent or -1 = no battery, on AC)
@@ -202,6 +200,8 @@ thread_local! {
     static EP: RefCell<Option<IAudioEndpointVolume>> = const { RefCell::new(None) };
     static TB_MSG: Cell<u32> = const { Cell::new(0) }; // "TaskbarCreated"
     static SH_MSG: Cell<u32> = const { Cell::new(0) }; // "SHELLHOOK": window events for the shell (we are the shell hook window without explorer)
+    // Edge, previous boundary and applied boundary when Explorer did not reserve our strip.
+    static MANUAL_STRIP: Cell<Option<(bool, i32, i32)>> = const { Cell::new(None) };
     static EXP_TRAY: Cell<HWND> = const { Cell::new(null_mut()) }; // explorer's taskbar we registered with
     static APP_FG: Cell<HWND> = const { Cell::new(null_mut()) }; // last foreground window that is not ours: the language button acts on it
     static LANG_TRY: Cell<(u32, usize)> = const { Cell::new((0, 0)) }; // (thread, layout before) of the last switch, checked by timer 7
@@ -742,8 +742,10 @@ unsafe fn place(hwnd: HWND) {
     ab.cbSize = size_of::<APPBARDATA>() as u32;
     ab.hWnd = hwnd;
     // the reserved strip: the bar itself plus the dock's gap under it
-    // the dock reserves nothing: maximized windows take the whole screen and the dock slides away over them
-    let strip = if style() == Style::Dock { 0 } else { bar_h() };
+    let strip = bar_h() + dock_gap();
+    if MANUAL_STRIP.get().is_some_and(|(top, _, end)| top != at_top() || end != if top { strip } else { cy - strip }) {
+        release_manual_strip();
+    }
     if at_top() {
         ab.uEdge = ABE_TOP;
         ab.rc = RECT { left: 0, top: 0, right: cx, bottom: strip };
@@ -756,16 +758,42 @@ unsafe fn place(hwnd: HWND) {
         ab.rc.top = ab.rc.bottom - strip;
     }
     SHAppBarMessage(ABM_SETPOS, &mut ab);
-    // No explorer (rs-shell / rust-explorer): nobody handles appbars, so set the work area ourselves. Without it maximized
-    // windows slide under the bar and, covering the whole monitor, count as "fullscreen" and hide the bar.
-    if find_other("Shell_TrayWnd").is_null() {
-        set_work_area(if at_top() { RECT { left: 0, top: ab.rc.bottom, right: cx, bottom: cy } } else { RECT { left: 0, top: 0, right: cx, bottom: ab.rc.top } });
-    }
+    reserve_work_area();
     let (x, w) = bar_x_w();
     // the dock is a pill; the other styles a plain strip
     SetWindowRgn(hwnd, if style() == Style::Dock { CreateRoundRectRgn(0, 0, w + 1, bar_h() + 1, bar_h(), bar_h()) } else { null_mut() }, 1);
     SetWindowPos(hwnd, HWND_TOPMOST, x, bar_y(), w, bar_h(), SWP_NOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
+}
+
+/// Some shells accept the appbar request but leave maximized windows the full monitor.
+unsafe fn reserve_work_area() {
+    let mut area: RECT = zeroed();
+    if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as *mut _, 0) == 0 {
+        return;
+    }
+    let top = at_top();
+    let edge = if top { &mut area.top } else { &mut area.bottom };
+    let limit = if top { bar_h() } else { bar_top() };
+    if (top && *edge < limit) || (!top && *edge > limit) {
+        let previous = *edge;
+        *edge = limit;
+        if SystemParametersInfoW(SPI_SETWORKAREA, 0, &mut area as *mut _ as *mut _, SPIF_SENDCHANGE) != 0 {
+            MANUAL_STRIP.set(Some((top, previous, limit)));
+        }
+    }
+}
+
+unsafe fn release_manual_strip() {
+    let Some((top, previous, applied)) = MANUAL_STRIP.take() else { return };
+    let mut area: RECT = zeroed();
+    if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as *mut _, 0) != 0 {
+        let edge = if top { &mut area.top } else { &mut area.bottom };
+        if *edge == applied {
+            *edge = previous;
+            set_work_area(area);
+        }
+    }
 }
 
 unsafe fn set_work_area(mut want: RECT) {
@@ -1420,37 +1448,22 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
         return false; // the desktop itself is full size (rs-shell's desktop is a rust-explorer window; a file manager is never "fullscreen")
     }
+    // A maximized window's invisible resize borders can extend past the screen.
+    // Only its client area counts as fullscreen.
     let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
+    let mut origin: POINT = zeroed();
+    if GetClientRect(fg, &mut r) == 0 || ClientToScreen(fg, &mut origin) == 0 {
+        return false;
+    }
     let mut mi: MONITORINFO = zeroed();
     mi.cbSize = size_of::<MONITORINFO>() as u32;
     GetMonitorInfoW(MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST), &mut mi);
     let m = mi.rcMonitor;
-    (m.left, m.top) == (0, 0) && r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
-}
-
-/// True when no app window is on screen (none open, or all minimized: Win+D): the user is looking at the desktop.
-unsafe fn desktop_now() -> bool {
-    BTNS.with_borrow(|b| b.iter().flat_map(|b| &b.wins).all(|&w| IsIconic(w) != 0))
+    (m.left, m.top) == (0, 0) && origin.x <= m.left && origin.y <= m.top && origin.x + r.right >= m.right && origin.y + r.bottom >= m.bottom
 }
 
 unsafe fn fs_update(hwnd: HWND) {
     let fs = fullscreen_now(hwnd);
-    // a fullscreen game keeps the screen: the pointer at the bottom edge does not bring the bar (games park it at the
-    // edges all the time); Win opens Start, which brings the bar with it
-    let mut pt = POINT { x: 0, y: 0 };
-    GetCursorPos(&mut pt);
-    // desktop in front: the bar leaves 2 s after the pointer does and comes back at the bottom edge (an open flyout keeps it)
-    let now = now_ms();
-    let sh = GetSystemMetrics(SM_CYSCREEN);
-    let over = if at_top() { pt.y <= 0 || (pt.y < bar_h() && BAR_P.get() > 0.0) } else { pt.y >= sh - 1 || (pt.y >= sh - bar_h() - dock_gap() && BAR_P.get() > 0.0) };
-    if fs || !(desktop_now() || dock_covered()) || fly::any_open() || over {
-        DESK_T.set(now);
-    }
-    let desk = !fs && now.saturating_sub(DESK_T.get()) >= 2000;
-    if DESK_HIDE.swap(desk, Relaxed) != desk {
-        bar_anim(hwnd);
-    }
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
             fly::close_now();
@@ -1458,23 +1471,6 @@ unsafe fn fs_update(hwnd: HWND) {
         }
         bar_anim(hwnd);
     }
-}
-
-/// The dock is in the way of the window in front (a maximized one, or one dragged down under it): it hides like over the
-/// desktop and comes back when the pointer touches the bottom edge.
-unsafe fn dock_covered() -> bool {
-    if style() != Style::Dock {
-        return false;
-    }
-    let fg = GetForegroundWindow();
-    if fg.is_null() || IsIconic(fg) != 0 || fg == BAR.load(Relaxed) as HWND || fly::any_open() {
-        return false;
-    }
-    let mut r: RECT = zeroed();
-    GetWindowRect(fg, &mut r);
-    let (x, w) = bar_x_w();
-    let top = GetSystemMetrics(SM_CYSCREEN) - bar_h() - dock_gap();
-    r.bottom > top && r.right > x && r.left < x + w
 }
 
 /// SetForegroundWindow that also works when the request comes from a keyboard hook (we have not "received input" then):
@@ -2417,6 +2413,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_DROPFILES => on_drop(hwnd, wp as HDROP),
         WM_TIMER => {
             hide_taskbar_if_shown();
+            reserve_work_area();
             refresh();
             // repaint (GDI+, the costly part) only when something shown changed; every 10th tick anyway as a safety net
             let (last, quiet) = SIG.get();
@@ -2484,9 +2481,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             ab.cbSize = size_of::<APPBARDATA>() as u32;
             ab.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut ab);
-            if find_other("Shell_TrayWnd").is_null() {
-                set_work_area(RECT { left: 0, top: 0, right: GetSystemMetrics(SM_CXSCREEN), bottom: GetSystemMetrics(SM_CYSCREEN) }); // ours: give the strip back
-            }
+            release_manual_strip();
             show_taskbar(OLD_STATE.get());
             DestroyWindow(HOST.replace(null_mut()));
             announce(); // icons go back to explorer's tray

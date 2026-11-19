@@ -54,7 +54,7 @@ The gear at the left end of the bar opens **Style**. The choice applies at once 
 |---|---|
 | **Normal** | Windows 11 blue, the bar at the bottom |
 | **Terminal** | Green on black, Consolas, square corners |
-| **Floating dock** | A pill-shaped bar in the middle; maximized windows get the whole screen, the dock slides away over them and comes back at the bottom edge |
+| **Floating dock** | A centered pill-shaped bar. Maximized windows stop above the dock, and fullscreen apps can use the entire screen. |
 | **Tiling** | A thin bar at the top, amber accent, square corners; "Tile the windows" puts the open windows side by side |
 
 The choice is stored in `%ProgramData%\WinRust\style.txt`.

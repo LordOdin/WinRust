@@ -100,24 +100,6 @@ unsafe extern "system" fn park(h: HWND, _: LPARAM) -> BOOL {
     }
 }
 
-fn set_wallpaper() {
-    let Some(src) = reg(&["query", r"HKCU\Control Panel\Desktop", "/v", "WallPaper"]).map(|o| parse_run(&o)).and_then(|v| v.into_iter().next()) else { return };
-    let mut path = PathBuf::from(&src);
-    // without explorer's image transcoder the desktop paints only BMP: convert once (System.Drawing) and keep the copy
-    if !src.to_lowercase().ends_with(".bmp") {
-        let Ok(base) = std::env::var("LOCALAPPDATA") else { return };
-        let bmp = PathBuf::from(base).join("rs-shell").join("wallpaper.bmp");
-        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-        if modified(&bmp) < modified(&PathBuf::from(&src)) {
-            let _ = std::fs::create_dir_all(bmp.parent().unwrap_or(&bmp));
-            let script = format!("Add-Type -AssemblyName System.Drawing; $i=[Drawing.Image]::FromFile('{}'); $i.Save('{}',[Drawing.Imaging.ImageFormat]::Bmp)", src.replace('\'', "''"), bmp.display().to_string().replace('\'', "''"));
-            let _ = quiet("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).creation_flags(NO_WINDOW).status();
-        }
-        path = bmp;
-    }
-    unsafe { SystemParametersInfoW(0x14, 0, wide(&path.to_string_lossy()).as_ptr() as _, 0) }; // SPI_SETDESKWALLPAPER
-}
-
 /// Appends a line to %LOCALAPPDATA%\rs-shell\log.txt: a shell has no console, so this is the only way to see what it did.
 fn log(msg: &str) {
     use std::io::Write;
@@ -135,8 +117,6 @@ fn run_shell() {
     // --minimized left grey rectangles over the icons): hide them, the bar lists the windows anyway
     let mut mm = MINIMIZEDMETRICS { cbSize: size_of::<MINIMIZEDMETRICS>() as u32, iWidth: 0, iHorzGap: 0, iVertGap: 0, iArrange: ARW_HIDE as i32 };
     unsafe { SystemParametersInfoW(SPI_SETMINIMIZEDMETRICS, mm.cbSize, &mut mm as *mut _ as _, 0) };
-    // the desktop is blank without explorer: repaint the user's wallpaper (again below, once the session has settled)
-    thread::spawn(set_wallpaper); // the first conversion takes a second or two; do not hold up autostart
     let list = autostart();
     log(&format!("autostart: {} entries", list.len()));
     for c in list {
@@ -144,7 +124,6 @@ fn run_shell() {
         log(&format!("start {c} -> {:?}", r.map(|_| ())));
     }
     thread::sleep(Duration::from_secs(4)); // topbar may already have been started by its own Run entry
-    set_wallpaper();
     // no bar yet (its logon task is gone in user mode): start it and its hotkey helper from our folder, with our normal rights
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     let hotkeys = find_exe("reshell.exe"); // lives in topbar's folder, not ours
@@ -239,13 +218,11 @@ fn overlay() {
     unsafe { windows_sys::Win32::System::Console::FreeConsole() };
     let replace = replace_on();
     log(&format!("overlay start (replace explorer: {replace})"));
-    let wp = thread::spawn(set_wallpaper); // makes sure the BMP the desktop window paints exists (and refreshes the wallpaper)
     if !bar_up() { log(&format!("topbar spawn -> {:?}", quiet(find_exe("topbar.exe")).spawn().map(|_| ()))); }
     // Win+I / Win+E / Win+D live in reshell: its Run entry may be missing (another account's HKCU), and without it Explorer's own Win+I
     // fails once the shell is gone. A second copy exits at once (one hook per session).
     let hk = find_exe("reshell.exe");
     if hk.exists() { log(&format!("reshell spawn -> {:?}", quiet(&hk).spawn().map(|_| ()))); }
-    let _ = wp.join(); // the BMP conversion (only on a fresh install or a new wallpaper) finishes before the desktop paints it
     let desktop = dir().join("rust-explorer.exe");
     let up = || unsafe { !FindWindowW(wide("Progman").as_ptr(), wide("rs-desktop").as_ptr()).is_null() };
     if desktop.exists() && !up() { log(&format!("desktop spawn -> {:?}", quiet(&desktop).arg("--desktop").spawn().map(|_| ()))); }

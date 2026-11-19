@@ -710,7 +710,7 @@ unsafe fn anim_step(hw: HWND) {
     let now = now_ms();
     let (g, gt0, gpos) = GHOST.get();
     if hw == g {
-        let t = (now.saturating_sub(gt0) as f32 / 150.0).min(1.0);
+        let t = (now.saturating_sub(gt0) as f32 / Timing::FlyOut.ms() as f32).min(1.0);
         let q = t * t;
         SetLayeredWindowAttributes(hw, 0, ((1.0 - q) * 255.0) as u8, LWA_ALPHA);
         SetWindowPos(hw, null_mut(), gpos.0, gpos.1 + (q * sc(10) as f32) as i32, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
@@ -718,7 +718,7 @@ unsafe fn anim_step(hw: HWND) {
             kill_ghost();
         }
     } else if hw == FH.get() {
-        let t = (now.saturating_sub(T0.get()) as f32 / 220.0).min(1.0);
+        let t = (now.saturating_sub(T0.get()) as f32 / Timing::FlyIn.ms() as f32).min(1.0);
         let p = 1.0 - (1.0 - t).powi(3);
         SetLayeredWindowAttributes(hw, 0, (p * 255.0) as u8, LWA_ALPHA);
         let (x, y) = FIN.get();
@@ -731,12 +731,24 @@ unsafe fn anim_step(hw: HWND) {
     }
 }
 
+unsafe fn position(k:Kind,w:i32,h:i32)->(i32,i32) {
+    let bar=BAR.load(Relaxed) as HWND;
+    let l=bar_layout(bar);
+    let anchor=match k {
+        Kind::Start=>tip_cx(&l,0),
+        Kind::Menu=>MENU_X.get()+sc(MW)/2,
+        Kind::Cal=>tip_cx(&l,CLOCK),
+        _=>tip_cx(&l,WIFI_I),
+    };
+    edge::popup(anchor,w,h,sc(8))
+}
+
 pub fn toggle(k: Kind) {
     if FLY.get() == Some(k) {
         return close();
     }
     let (was, at) = LAST.get();
-    if was == Some(k) && unsafe { now_ms() }.saturating_sub(at) < 400 {
+    if was == Some(k) && unsafe { now_ms() }.saturating_sub(at) < u64::from(Timing::MenuGuard.ms()) {
         return; // it closed an instant ago (focus moved to the key / click that is toggling it): this press means "close", not "reopen"
     }
     close();
@@ -768,14 +780,8 @@ pub fn toggle(k: Kind) {
             _ => {}
         }
         let (w, h) = (sc(size(k).0), sc(size(k).1));
-        let sw = GetSystemMetrics(SM_CXSCREEN);
-        let x = match k {
-            Kind::Start => (sw - w) / 2,
-            Kind::Menu => MENU_X.get().min(sw - w - sc(8)).max(sc(8)),
-            _ => sw - w - sc(8),
-        };
+        let (x,fy)=position(k,w,h);
         let class = wide("topbar_fly");
-        let fy = pop_y(h); // above the bar (below it at the top of the screen)
         let hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED, class.as_ptr(), null(), WS_POPUP, x, fy + sc(14), w, h, null_mut(), null_mut(), GetModuleHandleW(null()), null());
         SetLayeredWindowAttributes(hw, 0, 0, LWA_ALPHA); // starts invisible, anim_step fades it in
         if k == Kind::Start {
@@ -1133,7 +1139,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                 let dots = "•".repeat(p.chars().count());
                 text(dc, &dots, r(30, 112, w - 30, 150), pal().text, DT_LEFT);
                 // a blinking caret after the dots
-                if now_ms() / 530 % 2 == 0 {
+                if now_ms() / u64::from(Timing::Caret.ms()) % 2 == 0 {
                     let mut tr = RECT { left: 0, top: 0, right: 0, bottom: 0 };
                     let wd = wide(&dots);
                     DrawTextW(dc, wd.as_ptr(), -1, &mut tr, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
@@ -1159,7 +1165,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                     for (i, n) in nets.iter().enumerate() {
                         let rc = rs[i].0;
                         // rows fade in one after another when the panel opens
-                        let t = ease(((age - 45.0 * i as f32) / 240.0).clamp(0.0, 1.0));
+                        let t = ease(((age - Timing::WifiRowStagger.ms() as f32 * i as f32) / Timing::WifiRowIn.ms() as f32).clamp(0.0, 1.0));
                         if t < 1.0 {
                             BUSY.set(true);
                         }
@@ -1298,7 +1304,7 @@ unsafe fn paint(hw: HWND, k: Kind) {
                         let Some(app) = f.get(i).and_then(|&ai| apps.get(ai)) else { continue };
                         // the row that was just pinned pulses in the accent colour for a moment
                         let pulse = JUST.with_borrow(|j| {
-                            let age = now_ms().saturating_sub(j.1) as f32 / 1200.0;
+                            let age = now_ms().saturating_sub(j.1) as f32 / Timing::PinPulse.ms() as f32;
                             if age < 1.0 && !j.0.is_empty() && app.1 == wide(&j.0) { (1.0 - age) * (1.0 - age) } else { 0.0 }
                         });
                         let sel = i == SEL.get(); // what Enter opens
@@ -1404,8 +1410,7 @@ unsafe extern "system" fn proc(hw: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 read_nets();
                 let (w, h) = (sc(size(k).0), sc(size(k).1));
                 // the panel hangs above the bar: keep its bottom edge where it is and grow / shrink upward
-                let (x, _) = FIN.get();
-                let y = pop_y(h);
+                let (x,y)=position(k,w,h);
                 FIN.set((x, y));
                 SetWindowPos(hw, null_mut(), x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 SetWindowRgn(hw, CreateRoundRectRgn(0, 0, w + 1, h + 1, rr(16), rr(16)), 1);

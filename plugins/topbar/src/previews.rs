@@ -135,7 +135,7 @@ unsafe fn layout() {
     let bar = BAR.load(Relaxed) as HWND;
     let (width, height, cx) = GROUP.with_borrow_mut(|state| {
         let g = state.as_mut().unwrap();
-        let screen = GetSystemMetrics(SM_CXSCREEN);
+        let screen = GetSystemMetrics(SM_CXSCREEN) - if edge::vertical() {edge::thickness()+dock_gap()} else {0};
         let pad = sc(6);
         let card_w = sc(208).min((screen - 4 * pad).max(sc(40)));
         let card_h = sc(150);
@@ -172,8 +172,7 @@ unsafe fn layout() {
             tip_cx(&bar_layout(bar), g.button),
         )
     });
-    let x = (cx - width / 2).clamp(0, (GetSystemMetrics(SM_CXSCREEN) - width).max(0));
-    let y = if at_top() { bar_h() } else { bar_top() - height };
+    let (x,y)=edge::popup(cx,width,height,0);
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
     InvalidateRect(hwnd, null(), 0);
 }
@@ -224,9 +223,9 @@ unsafe fn maintain(hwnd: HWND) {
     let mut rebuild = false;
     let keep_open = GROUP.with_borrow_mut(|state| {
         let Some(g) = state.as_mut() else { return false };
-        if under == hwnd || (under == bar && hit(bar, pointer(bar).x) == g.button) {
+        if under == hwnd || (under == bar && hit(bar, edge::axis(pointer(bar))) == g.button) {
             g.outside_since = None;
-        } else if now_ms().saturating_sub(*g.outside_since.get_or_insert_with(|| now_ms())) >= 220 {
+        } else if now_ms().saturating_sub(*g.outside_since.get_or_insert_with(|| now_ms())) >= u64::from(Timing::PreviewDismiss.ms()) {
             return false;
         }
         let current = windows(g.button);

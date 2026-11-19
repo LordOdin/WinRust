@@ -70,6 +70,7 @@ struct Order {
     boot: u64,
     manual: Vec<String>,
     shuffled: Vec<String>,
+    timed: Vec<String>,
 }
 impl Order {
     fn load() -> Self {
@@ -78,6 +79,7 @@ impl Order {
         let same = shuffled.next().is_some_and(|s| s == boot.to_string());
         Self {
             boot,
+            timed: Vec::new(),
             manual: read_order("IconOrder"),
             shuffled: if same { shuffled.collect() } else { Vec::new() },
         }
@@ -89,10 +91,54 @@ thread_local! {
     static PRESS: RefCell<Option<Drag>> = const { RefCell::new(None) };
 }
 
+pub(super) const SHUFFLE_TIMER: usize = 8;
+
+pub(super) unsafe fn schedule(bar: HWND) {
+    KillTimer(bar, SHUFFLE_TIMER);
+    if settings::preferences().timed_shuffle {
+        SetTimer(bar, SHUFFLE_TIMER, Timing::Shuffle.ms(), None);
+    } else {
+        ORDERING.with_borrow_mut(|o| o.timed.clear());
+    }
+}
+
+pub(super) unsafe fn reshuffle(bar: HWND) {
+    if pending() || !settings::preferences().timed_shuffle {
+        return;
+    }
+    let mut keys = BTNS.with_borrow(|buttons| buttons.iter().skip(1).map(|b| b.key.clone()).collect::<Vec<_>>());
+    if keys.len() < 2 {
+        return;
+    }
+    let previous = keys.clone();
+    let seed = GetTickCount64();
+    keys.sort_by_cached_key(|key| {
+        let mut h = DefaultHasher::new();
+        seed.hash(&mut h);
+        key.hash(&mut h);
+        h.finish()
+    });
+    if keys == previous {
+        keys.rotate_left(1);
+    }
+    ORDERING.with_borrow_mut(|o| o.timed = keys);
+    hide_tip(bar);
+    previews::hide();
+    HOT.set(NONE);
+    refresh_buttons();
+    InvalidateRect(bar, null(), 0);
+}
+
 pub(super) fn apply(buttons: &mut [Btn]) {
     let shuffle = settings::preferences().shuffle;
     ORDERING.with_borrow(|o| {
-        let list = if shuffle { &o.shuffled } else { &o.manual };
+        let list = if settings::preferences().timed_shuffle && !o.timed.is_empty() {
+            &o.timed
+        } else if shuffle {
+            &o.shuffled
+        } else {
+            &o.manual
+        };
         if !shuffle && list.is_empty() {
             return;
         }
@@ -114,6 +160,7 @@ pub(super) fn apply(buttons: &mut [Btn]) {
 struct Drag {
     key: String,
     origin: POINT,
+    dismissed_preview: bool,
     moving: bool,
     target: Option<String>,
 }
@@ -125,12 +172,13 @@ pub(super) fn marker() -> Option<String> {
     PRESS.with_borrow(|p| p.as_ref().and_then(|d| d.target.clone()))
 }
 
-pub(super) unsafe fn begin(bar: HWND, button: i32, point: POINT) {
+pub(super) unsafe fn begin(bar: HWND, button: i32, point: POINT, dismissed_preview: bool) {
     let key = BTNS.with_borrow(|bs| bs.get(button as usize).map(|b| b.key.clone()));
     if let Some(key) = key {
         PRESS.replace(Some(Drag {
             key,
             origin: point,
+            dismissed_preview,
             moving: false,
             target: None,
         }));
@@ -158,7 +206,7 @@ unsafe fn drop_index(bar: HWND, x: i32) -> i32 {
 }
 
 pub(super) unsafe fn motion(bar: HWND, point: POINT) {
-    let target = drop_index(bar, point.x);
+    let target = drop_index(bar, edge::axis(point));
     PRESS.with_borrow_mut(|p| {
         let Some(d) = p else { return };
         if !d.moving
@@ -193,9 +241,9 @@ pub(super) unsafe fn finish(bar: HWND, point: POINT) {
         return;
     }
     let target = if d.moving {
-        drop_index(bar, point.x)
+        drop_index(bar, edge::axis(point))
     } else {
-        hit(bar, point.x)
+        hit(bar, edge::axis(point))
     };
     let mut keys = BTNS.with_borrow(|bs| bs.iter().skip(1).map(|b| b.key.clone()).collect::<Vec<_>>());
     let Some(from) = keys.iter().position(|k| k == &d.key) else {
@@ -206,7 +254,7 @@ pub(super) unsafe fn finish(bar: HWND, point: POINT) {
     }
     let to = target as usize - 1;
     if !d.moving {
-        if from == to && !(settings::preferences().click_previews && previews::show(target)) {
+        if from == to && !d.dismissed_preview && !(settings::preferences().click_previews && previews::show(target)) {
             click(target, true, false);
         }
         return;
@@ -218,6 +266,10 @@ pub(super) unsafe fn finish(bar: HWND, point: POINT) {
     keys.insert(to, key);
     let err = ORDERING.with_borrow_mut(|o| {
         let shuffle = settings::preferences().shuffle;
+        if settings::preferences().timed_shuffle {
+            o.timed = keys;
+            return ERROR_SUCCESS;
+        }
         let name = if shuffle { "CurrentBootIconOrder" } else { "IconOrder" };
         let mut data = Vec::new();
         if shuffle {

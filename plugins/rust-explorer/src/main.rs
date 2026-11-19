@@ -11,21 +11,17 @@
 // search blocks the UI while it waits for the service (no async), the service pipe is admin-only so run as admin,
 // drops always land in the current folder (not on a folder row), tabs remember only the folder (no selection/scroll).
 // upgrade: each of those one at a time; then register as the folder-open handler.
-// rust-explorer --desktop  - the desktop for rs-shell: borderless bottom-most color-keyed window with the Desktop folders
-//   (user + public) as big icons over the wallpaper it paints itself (without explorer nothing else does): reads the BMP
-//   that rs-shell converts into %LOCALAPPDATA%\rs-shell\wallpaper.bmp, "fill" style, scaled once at start.
-//   shortcuts: wallpaper is loaded once (changing it needs a restart), icon labels are always white, no background menu /
-//   drag-to-position / auto-arrange, items from the public desktop can't be renamed.
+// rust-explorer --desktop hosts the desktop icons, wallpaper and background context menu.
 #![windows_subsystem = "windows"]
 use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, PathBuf}, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed}};
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{BLACK_BRUSH, GetStockObject, InvalidateRect}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
+mod desktop_menu;
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
 fn desk() -> bool { DESKTOP.load(Relaxed) }
 const CLR_NONE: isize = 0xFFFF_FFFF; // list background / text background: let the parent's wallpaper show through
-thread_local! { static WALL: std::cell::Cell<(isize, i32, i32)> = const { std::cell::Cell::new((0, 0, 0)) }; } // (HBITMAP, w, h)
 /// Margins of the desktop's icon list: the bar sits at the bottom. shortcut: assumes the bar is at most 44 px (scaled); it may not reserve the work area.
 fn desk_top() -> i32 { ui::sc(8) }
 fn desk_bottom() -> i32 { ui::sc(44) }
@@ -136,6 +132,7 @@ fn paste(h: HWND, dir: &PathBuf) {
 /// Right click on empty space: the folder's own menu.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn bg_menu(h: HWND) {
+    if desk() {desktop_menu::show(h);return;}
     let m = CreatePopupMenu();
     for (id, t) in [(1usize, "New folder"), (2, "New text file"), (3, "Paste"), (4, "Refresh"), (5, "Properties")] { AppendMenuW(m, MF_STRING, id, w(t).as_ptr()); }
     let disk = tool("wiztree");
@@ -394,43 +391,6 @@ fn search_focus() {
     put(edit, EM_SETSEL, 2, 2);
 }
 
-/// Wallpaper for the desktop window.
-mod wall {
-    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::{IMAGE_BITMAP, LR_LOADFROMFILE, LoadImageW}};
-
-    /// The BMP scaled ("fill": cropped to the screen's aspect) to cw x ch. 0 = no wallpaper file.
-    pub fn load(cw: i32, ch: i32) -> isize {
-        let Ok(base) = std::env::var("LOCALAPPDATA") else { return 0 };
-        let path: Vec<u16> = format!(r"{base}\rs-shell\wallpaper.bmp").encode_utf16().chain([0]).collect();
-        unsafe {
-            let src = LoadImageW(std::ptr::null_mut(), path.as_ptr(), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
-            if src.is_null() { return 0; }
-            let mut bm: BITMAP = std::mem::zeroed();
-            GetObjectW(src, size_of::<BITMAP>() as i32, &mut bm as *mut _ as _);
-            let screen = GetDC(std::ptr::null_mut());
-            let dst = CreateCompatibleBitmap(screen, cw, ch);
-            let (sdc, ddc) = (CreateCompatibleDC(screen), CreateCompatibleDC(screen));
-            let (o1, o2) = (SelectObject(sdc, src), SelectObject(ddc, dst));
-            SetStretchBltMode(ddc, HALFTONE);
-            let (sw, sh) = if bm.bmWidth * ch > bm.bmHeight * cw { (bm.bmHeight * cw / ch, bm.bmHeight) } else { (bm.bmWidth, bm.bmWidth * ch / cw) };
-            StretchBlt(ddc, 0, 0, cw, ch, sdc, (bm.bmWidth - sw) / 2, (bm.bmHeight - sh) / 2, sw, sh, SRCCOPY);
-            SelectObject(sdc, o1); SelectObject(ddc, o2);
-            DeleteDC(sdc); DeleteDC(ddc); ReleaseDC(std::ptr::null_mut(), screen); DeleteObject(src);
-            dst as isize
-        }
-    }
-
-    pub fn paint(dc: HDC, bmp: isize, cw: i32, ch: i32) {
-        unsafe {
-            let m = CreateCompatibleDC(dc);
-            let old = SelectObject(m, bmp as _);
-            BitBlt(dc, 0, 0, cw, ch, m, 0, 0, SRCCOPY);
-            SelectObject(m, old);
-            DeleteDC(m);
-        }
-    }
-}
-
 /// Shell integration through COM (windows crate): file operations, context menu, drag and drop.
 mod sh {
     use std::{cell::RefCell, ffi::c_void, os::windows::ffi::OsStrExt, path::PathBuf};
@@ -574,11 +534,53 @@ mod sh {
 
     /// The real shell context menu for `paths`, so 7-Zip/Git/etc. entries show up.
     pub fn show(h: *mut c_void, paths: &[PathBuf]) -> Result<()> {
+        let hwnd=HWND(h);
+        track(hwnd,ui(hwnd,paths)?)
+    }
+
+    pub fn paste_shortcuts(dir:&std::path::Path,paths:&[PathBuf])->Result<()> {
+        for path in paths {
+            let Some(name)=path.file_name() else { continue };
+            let stem=name.to_string_lossy();
+            let link=unsafe {CoCreateInstance::<_,IShellLinkW>(&ShellLink,None,CLSCTX_INPROC_SERVER)?};
+            unsafe {link.SetPath(PCWSTR(wide(path).as_ptr()))?;}
+            let file:IPersistFile=link.cast()?;
+            for n in 1.. {
+                let label=if n==1 {format!("{stem} - Shortcut.lnk")} else {format!("{stem} - Shortcut ({n}).lnk")};
+                let dest=dir.join(label);
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
+                    Err(e) if e.kind()==std::io::ErrorKind::AlreadyExists=>continue,
+                    Err(e)=>return Err(e.into()),
+                    Ok(f)=>drop(f),
+                }
+                if let Err(e)=unsafe {file.Save(PCWSTR(wide(&dest).as_ptr()),true)} {
+                    let _=std::fs::remove_file(dest);
+                    return Err(e);
+                }
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn background(h:*mut c_void) -> Result<()> {
         unsafe {
-            let hwnd = HWND(h);
-            let cm: IContextMenu = ui(hwnd, paths)?;
+            let hwnd=HWND(h);
+            let desktop=SHGetDesktopFolder()?;
+            let cm=desktop.CreateViewObject::<IContextMenu>(hwnd).or_else(|_| {
+                let view:IShellView=desktop.CreateViewObject(hwnd)?;
+                view.GetItemObject(SVGIO_BACKGROUND)
+            })?;
+            track(hwnd,cm)
+        }
+    }
+
+    fn track(hwnd:HWND,cm:IContextMenu) -> Result<()> {
+        unsafe {
             let menu = CreatePopupMenu()?;
-            cm.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL).ok()?;
+            if let Err(e)=cm.QueryContextMenu(menu,0,1,0x7FFF,CMF_NORMAL).ok() {
+                let _=DestroyMenu(menu);return Err(e);
+            }
             CM2.set(cm.cast::<IContextMenu2>().ok());
             let mut pt = POINT::default();
             GetCursorPos(&mut pt)?;
@@ -586,7 +588,9 @@ mod sh {
             CM2.set(None);
             if id > 0 {
                 let ci = CMINVOKECOMMANDINFO { cbSize: size_of::<CMINVOKECOMMANDINFO>() as u32, hwnd, lpVerb: PCSTR((id - 1) as usize as *const u8), nShow: SW_SHOWNORMAL.0, ..Default::default() };
-                cm.InvokeCommand(&ci)?;
+                let result=cm.InvokeCommand(&ci);
+                DestroyMenu(menu)?;
+                return result;
             }
             DestroyMenu(menu)
         }
@@ -745,12 +749,13 @@ mod desk {
             it.iImage = -1; // I_IMAGECALLBACK
             put(list, LVM_INSERTITEMW, 0, &it as *const _ as isize);
         }
-        let (g, old, names) = (Grid::of(list), saved(), names());
+        let old=if desktop_menu::arrange() {HashMap::new()} else {saved()};
+        let (g,names)=(Grid::of(list),names());
         let mut taken = HashSet::new();
         let mut later = vec![];
         for (i, name) in names.iter().enumerate() {
-            match old.get(name).and_then(|&p| g.cell(p)).filter(|c| !taken.contains(c)) {
-                Some(c) => { taken.insert(c); set_pos(list, i, g.at(c)); }
+            match old.get(name).and_then(|&p| g.cell(p)).filter(|c| desktop_menu::free_position() || !taken.contains(c)) {
+                Some(c) => { taken.insert(c); set_pos(list, i, if desktop_menu::free_position() {old[name]} else {g.at(c)}); }
                 None => later.push(i),
             }
         }
@@ -805,12 +810,18 @@ mod desk {
                 return true;
             }
         }
+        if desktop_menu::auto_arrange() {return true;}
         let g = Grid::of(list);
         let n = put(list, LVM_GETITEMCOUNT, 0, 0).max(0) as usize;
         let mut taken: HashSet<(i32, i32)> = (0..n).filter(|i| !sel.contains(i)).filter_map(|i| g.cell(pos(list, i))).collect();
         let (dx, dy) = (pt.x - from.0, pt.y - from.1);
         for &i in &sel {
             let (x, y) = pos(list, i);
+            if desktop_menu::free_position() {
+                let mut r:RECT=unsafe {std::mem::zeroed()}; unsafe {GetClientRect(list,&mut r)};
+                set_pos(list,i,((x+dx).clamp(0,(r.right-g.cx).max(0)),(y+dy).clamp(0,(r.bottom-g.cy).max(0))));
+                continue;
+            }
             let want = g.cell((x + dx, y + dy)).unwrap_or_else(|| {
                 // dragged off the grid: the nearest edge cell
                 (((x + dx) / g.cx).clamp(0, g.cols - 1), ((y + dy) / g.cy).clamp(0, g.rows - 1))
@@ -857,28 +868,22 @@ mod desk {
 
     /// The desktop's background: the key colour while a live wallpaper shows through, else the picture. false = none to paint.
     pub unsafe fn erase(dc: HDC, h: HWND) -> bool {
-        let (bmp, cw, ch) = WALL.get();
         if LIVE.get() {
             let mut r: RECT = std::mem::zeroed();
             GetClientRect(h, &mut r);
             let b = CreateSolidBrush(KEY);
             FillRect(dc, &r, b);
             DeleteObject(b);
-        } else if bmp != 0 {
-            wall::paint(dc, bmp, cw, ch);
         } else {
-            return false;
+            return windows_sys::Win32::Graphics::Gdi::PaintDesktop(dc)!=0;
         }
         true
     }
 
     /// WorkerW without a wallpaper in it shows the picture wallpaper, like the desktop behind it.
     pub unsafe extern "system" fn workerw_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-        if m == WM_ERASEBKGND {
-            let (bmp, cw, ch) = WALL.get();
-            if bmp != 0 { wall::paint(wp as _, bmp, cw, ch); } else { let mut r: RECT = std::mem::zeroed(); GetClientRect(h, &mut r); FillRect(wp as _, &r, GetStockObject(BLACK_BRUSH) as _); }
-            return 1;
-        }
+        if m==WM_ERASEBKGND && windows_sys::Win32::Graphics::Gdi::PaintDesktop(wp as _)!=0 {return 1;}
+        if m==WM_CONTEXTMENU { desktop_menu::show(GetParent(h)); return 0; }
         DefWindowProcW(h, m, wp, lp)
     }
 
@@ -948,17 +953,12 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let il = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_SMALLICON);
                 put(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, il as isize);
                 if desk() {
-                    // system large icons; indexes are shared with the small list, so icon_of() works unchanged
-                    let big = SHGetFileInfoW(w("C:\\").as_ptr(), 0, &mut fi, size_of::<SHFILEINFOW>() as u32, SHGFI_SYSICONINDEX | SHGFI_LARGEICON);
-                    put(list, LVM_SETIMAGELIST, LVSIL_NORMAL as usize, big as isize);
-                    put(list, LVM_SETICONSPACING, 0, ((ui::sc(96) as isize) << 16) | ui::sc(88) as isize);
+                    desktop_menu::init(list);
                     // transparent background (the desktop paints it) and shadowed labels, readable on light wallpapers too
                     let ex = LVS_EX_TRANSPARENTBKGND | 0x0080_0000; // LVS_EX_TRANSPARENTSHADOWTEXT
                     put(list, LVM_SETEXTENDEDLISTVIEWSTYLE, ex as usize, ex as isize);
                     for msg in [LVM_SETBKCOLOR, LVM_SETTEXTBKCOLOR] { put(list, msg, 0, CLR_NONE); }
                     put(list, LVM_SETTEXTCOLOR, 0, 0x00FF_FFFF);
-                    let (cw, ch) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-                    WALL.set((wall::load(cw, ch), cw, ch));
                     // grey (not ClearType) smoothing: on a live wallpaper the labels sit on a colour key, where ClearType leaves coloured fringes
                     put(list, WM_SETFONT, windows_sys::Win32::Graphics::Gdi::CreateFontW(-ui::sc(13), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 4, 0, w(ui::ui_face()).as_ptr()) as usize, 1);
                     // like explorer's desktop: wallpaper apps look for a SHELLDLL_DefView under Progman
@@ -988,7 +988,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let list = ST.with_borrow(|st| st.list);
                 let (cw, ch) = ((lp & 0xFFFF) as i32, ((lp >> 16) & 0xFFFF) as i32);
                 if desk() {
-                    MoveWindow(list, 0, desk_top(), cw, (ch - desk_top() - desk_bottom()).max(0), 1);
+                    desktop_menu::layout_icons(list);
                 } else {
                     ui::layout_children(cw, ch);
                     InvalidateRect(h, ptr::null(), 0);
@@ -1011,6 +1011,21 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     21 => { if let Some(p) = ui::crumb_path(lp as usize) { load(h, p); } } // a part of the path in the address pill
                     _ => {}
                 }
+                0
+            }
+            WM_CONTEXTMENU if desk() => {
+                if wp as HWND==h || lp == -1 {desktop_menu::show(h);}
+                0
+            }
+            WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_DISPLAYCHANGE if desk() => {
+                use windows_sys::Win32::Graphics::Gdi::*;
+                if m==WM_DISPLAYCHANGE {
+                    SetWindowPos(h,HWND_BOTTOM,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),SWP_NOACTIVATE);
+                }
+                if (m==WM_SETTINGCHANGE && wp==SPI_SETWORKAREA as usize) || m==WM_DISPLAYCHANGE {
+                    desktop_menu::layout_icons(ST.with_borrow(|st|st.list));
+                }
+                RedrawWindow(h,ptr::null(),ptr::null_mut(),RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
                 0
             }
             WM_ERASEBKGND if desk() && desk::erase(wp as _, h) => 1,
@@ -1066,7 +1081,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                     }
                     NM_RCLICK if nm.hwndFrom == list => {
                         let (_, _, paths) = selected();
-                        if !paths.is_empty() { let _ = sh::show(h, &paths); reload(h); } else { bg_menu(h); }
+                        if !paths.is_empty() && (!desk() || (*(lp as *const NMITEMACTIVATE)).iItem>=0) { let _ = sh::show(h, &paths); reload(h); } else { bg_menu(h); }
+                        return 1;
                     }
                     LVN_COLUMNCLICK => {
                         let c = (*(lp as *const NMLISTVIEW)).iSubItem as usize;
@@ -1113,6 +1129,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                                 put(edit, EM_SETSEL, 0, -1);
                                 return 0;
                             }
+                            0x5D if desk() && paths.is_empty() => {desktop_menu::show(h); return 0;}
                             0x5D if !paths.is_empty() => { let _ = sh::show(h, &paths); }
                             0x43 | 0x58 if ctrl && !paths.is_empty() => { let _ = sh::clip_set(h, &paths, vk == 0x58); return 0; }
                             0x56 if ctrl => paste(h, &dir),

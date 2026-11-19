@@ -920,6 +920,11 @@ thread_local! {
     static EXE_ICONS: RefCell<HashMap<String, HICON>> = RefCell::new(HashMap::new()); // crisp icons of running apps, by exe
 }
 
+fn shared_host(exe: &str) -> bool {
+    const HOSTS: [&str; 8] = ["applicationframehost.exe", "javaw.exe", "java.exe", "pythonw.exe", "python.exe", "mmc.exe", "rundll32.exe", "dllhost.exe"];
+    exe.is_empty() || HOSTS.contains(&exe.rsplit('\\').next().unwrap_or(""))
+}
+
 /// Icon of a running window for its bar button: its exe's icon at the exact size (cached), else what the window reports.
 /// Apps run by a generic host (Store apps in ApplicationFrameHost, Java games in javaw, scripts in python...) would all
 /// get the host's icon: those keep the window's own icon.
@@ -929,8 +934,7 @@ unsafe fn win_icon(w: HWND) -> HICON {
         if !gear.is_null() {return gear;}
     }
     let exe = exe_of(w);
-    const HOSTS: [&str; 8] = ["applicationframehost.exe", "javaw.exe", "java.exe", "pythonw.exe", "python.exe", "mmc.exe", "rundll32.exe", "dllhost.exe"];
-    if exe.is_empty() || HOSTS.iter().any(|h| exe.rsplit('\\').next() == Some(*h)) {
+    if shared_host(&exe) {
         return icon_of(w);
     }
     let ic = EXE_ICONS.with_borrow_mut(|m| *m.entry(exe.clone()).or_insert_with(|| {
@@ -1057,15 +1061,15 @@ fn refresh_buttons() {
     ORDER.with_borrow_mut(|o| {
         o.retain(|w| loose.contains(w));
         o.extend(loose.iter().filter(|w| !o.contains(w)).copied().collect::<Vec<_>>());
-        let mut folders = HashMap::<String, usize>::new();
+        let mut apps = HashMap::<String, usize>::new();
         for &w in o.iter() {
             let exe = unsafe { exe_of(w) };
-            let key = if rust_explorer(&exe) {
-                if let Some(&i) = folders.get(&exe) {
+            let key = if !shared_host(&exe) {
+                if let Some(&i) = apps.get(&exe) {
                     btns[i].wins.push(w);
                     continue;
                 }
-                folders.insert(exe.clone(), btns.len());
+                apps.insert(exe.clone(), btns.len());
                 format!("app:{exe}")
             } else {
                 format!("window:{:x}:{exe}", w as usize)
@@ -2387,6 +2391,32 @@ unsafe fn tile_windows() {
     TileWindows(null_mut(), MDITILE_VERTICAL, &wa, wins.len() as u32, wins.as_ptr());
 }
 
+unsafe fn activate_window(window: HWND) {
+    if IsWindow(window) != 0 {
+        if IsIconic(window) != 0 {
+            ShowWindowAsync(window, SW_RESTORE);
+        }
+        SetForegroundWindow(window);
+    }
+}
+
+unsafe fn click_app(button: i32, dismissed_preview: bool) {
+    match previews::windows(button).as_slice() {
+        [] => {
+            let pin = BTNS.with_borrow(|buttons| buttons.get(button as usize).and_then(|b| b.pin));
+            let path = pin.and_then(|i| PINS.with_borrow_mut(|pins| {
+                let pin = pins.get_mut(i)?;
+                if let Some(target) = fix_msix_pin(&pin.lnk, &pin.target) { pin.target = target; }
+                Some(pin.launch_path())
+            }));
+            if let Some(path) = path { open(&path); }
+        }
+        [window] => activate_window(*window),
+        _ if !dismissed_preview => { previews::show(button); }
+        _ => {}
+    }
+}
+
 unsafe fn click(h: i32, left: bool, mid: bool) {
     match h {
         SEARCH if left => {
@@ -2426,33 +2456,8 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
                 fly::toggle(fly::Kind::Start);
             }
         }
-        1.. => {
-            let (wins, pin_index) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin)).unwrap_or_default());
-            match (wins.first(), left) {
-                // not running: launch the pinned app (a Store app may have updated since the pins were loaded)
-                (None, true) => {
-                    let launch = pin_index.and_then(|i| PINS.with_borrow_mut(|pins| {
-                        let pin = pins.get_mut(i)?;
-                        if let Some(target) = fix_msix_pin(&pin.lnk, &pin.target) { pin.target = target; }
-                        Some(pin.launch_path())
-                    }));
-                    if let Some(path) = launch { open(&path); }
-                }
-                (Some(&w), false) => close_window(w), // right / middle click
-                (Some(&w), true) => {
-                    // like the Windows taskbar: the active app's button minimizes it, a minimized one restores, any other raises
-                    let fg = GetForegroundWindow();
-                    if wins.contains(&fg) && IsIconic(fg) == 0 {
-                        ShowWindow(fg, SW_MINIMIZE);
-                    } else {
-                        if IsIconic(w) != 0 {
-                            ShowWindow(w, SW_RESTORE);
-                        }
-                        SetForegroundWindow(w);
-                    }
-                }
-                _ => {}
-            }
+        1.. if !left => {
+            if let Some(&window) = previews::windows(h).first() { close_window(window); }
         }
         _ => {}
     }
@@ -2653,6 +2658,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_DISPLAYCHANGE => place(hwnd),
         WM_DESTROY => {
+            previews::hide();
             let mut ab: APPBARDATA = zeroed();
             ab.cbSize = size_of::<APPBARDATA>() as u32;
             ab.hWnd = hwnd;
@@ -2763,6 +2769,7 @@ fn main() {
         icon_order::schedule(hwnd);
         SetTimer(hwnd, 1, 500, None);
         BAR.store(hwnd as isize, Relaxed);
+        previews::keep_visible_during_peek(hwnd);
         bar_anim(hwnd); // the bar slides in (it starts hidden above the screen)
         SetTimer(hwnd, 3, 250, None); // fullscreen watch
         thread::spawn(|| {

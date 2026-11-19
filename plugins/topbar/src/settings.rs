@@ -187,7 +187,7 @@ fn options() -> [OptionRow; 13] {
             None,
         ),
         (
-            t!("Открывать миниатюры по щелчку", "Click to open previews"),
+            t!("Миниатюры только по щелчку", "Open previews only on click"),
             behavior,
             |p| &mut p.click_previews,
             None,

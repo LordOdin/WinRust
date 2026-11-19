@@ -3,6 +3,19 @@ use windows_sys::Win32::Graphics::Dwm::*;
 
 const NAME: &str = "WinRustWindowPreviews";
 
+// DWM's window Peek entry point on Windows 8.1 and later. Resolve it at runtime
+// because the compositor exports it by ordinal rather than in the public SDK.
+type ActivatePeek = unsafe extern "system" fn(i32, HWND, HWND, u32, usize) -> i32;
+const WINDOW_PEEK: u32 = 3;
+
+fn peek_api() -> Option<ActivatePeek> {
+    static API: std::sync::OnceLock<Option<ActivatePeek>> = std::sync::OnceLock::new();
+    *API.get_or_init(|| unsafe {
+        let module = GetModuleHandleW(wide("dwmapi.dll").as_ptr());
+        GetProcAddress(module, 113usize as *const u8).map(|f| std::mem::transmute::<_, ActivatePeek>(f))
+    })
+}
+
 struct Card {
     window: HWND,
     thumbnail: isize,
@@ -33,6 +46,7 @@ struct Group {
 
 thread_local! {
     static HOVERED: Cell<HWND> = const { Cell::new(null_mut()) };
+    static PEEK_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static POPUP: Cell<HWND> = const { Cell::new(null_mut()) };
     static GROUP: RefCell<Option<Group>> = const { RefCell::new(None) };
 }
@@ -60,19 +74,37 @@ pub(super) unsafe fn init(instance: HINSTANCE) {
         instance,
         null(),
     ));
+    keep_visible_during_peek(POPUP.get());
+}
+
+pub(super) unsafe fn keep_visible_during_peek(hwnd: HWND) {
+    let enabled = 1i32;
+    DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK as u32, &enabled as *const _ as _, size_of::<i32>() as u32);
+}
+
+unsafe fn hover(hwnd: HWND, window: HWND) {
+    if HOVERED.replace(window) == window { return; }
+    if let Some(peek) = peek_api() {
+        if !window.is_null() && IsWindow(window) != 0 && peek(1, window, hwnd, WINDOW_PEEK, 0) >= 0 {
+            PEEK_ACTIVE.set(true);
+        } else if PEEK_ACTIVE.replace(false) {
+            peek(0, null_mut(), hwnd, WINDOW_PEEK, 0);
+        }
+    }
+    InvalidateRect(hwnd, null(), 0);
 }
 
 pub(super) unsafe fn hide() {
     let popup = POPUP.get();
-    HOVERED.set(null_mut());
+    hover(popup, null_mut());
     if GROUP.take().is_some() {
         KillTimer(popup, 1);
         ShowWindow(popup, SW_HIDE);
     }
 }
 
-fn windows(button: i32) -> Vec<HWND> {
-    BTNS.with_borrow(|buttons| buttons.get(button as usize).map(|b| b.wins.clone()).unwrap_or_default())
+pub(super) fn windows(button: i32) -> Vec<HWND> {
+    BTNS.with_borrow(|buttons| buttons.get(button as usize).map(|b| b.wins.iter().copied().filter(|&w| unsafe { IsWindow(w) != 0 }).collect()).unwrap_or_default())
 }
 
 unsafe fn caption(window: HWND) -> String {
@@ -174,6 +206,7 @@ unsafe fn layout() {
     });
     let (x,y)=edge::popup(cx,width,height,0);
     SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_SHOWWINDOW | SWP_NOACTIVATE);
+    update_hover(hwnd);
     InvalidateRect(hwnd, null(), 0);
 }
 
@@ -213,6 +246,18 @@ unsafe fn pointer(hwnd: HWND) -> POINT {
     GetCursorPos(&mut p);
     ScreenToClient(hwnd, &mut p);
     p
+}
+
+unsafe fn update_hover(hwnd: HWND) {
+    let mut screen: POINT = zeroed();
+    GetCursorPos(&mut screen);
+    let hovered = if WindowFromPoint(screen) == hwnd {
+        let pt = pointer(hwnd);
+        GROUP.with_borrow(|s| s.as_ref()
+            .and_then(|g| g.cards.iter().find(|c| PtInRect(&c.bounds, pt) != 0))
+            .map_or(null_mut(), |c| c.window))
+    } else { null_mut() };
+    hover(hwnd, hovered);
 }
 
 unsafe fn maintain(hwnd: HWND) {
@@ -260,6 +305,8 @@ unsafe fn maintain(hwnd: HWND) {
         hide();
     } else if rebuild {
         layout();
+    } else {
+        update_hover(hwnd);
     }
 }
 
@@ -393,16 +440,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_ERASEBKGND => return 1,
         WM_TIMER => maintain(hwnd),
         WM_MOUSEMOVE => {
-            let pt = pointer(hwnd);
-            let hovered = GROUP.with_borrow(|s| {
-                s.as_ref()
-                    .and_then(|g| g.cards.iter().find(|c| PtInRect(&c.bounds, pt) != 0))
-                    .map(|c| c.window)
-                    .unwrap_or(null_mut())
-            });
-            if HOVERED.replace(hovered) != hovered {
-                InvalidateRect(hwnd, null(), 0);
-            }
+            update_hover(hwnd);
             let mut track = TRACKMOUSEEVENT {
                 cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
                 dwFlags: TME_LEAVE,
@@ -411,11 +449,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             };
             TrackMouseEvent(&mut track);
         }
-        WM_MOUSELEAVE => {
-            if !HOVERED.replace(null_mut()).is_null() {
-                InvalidateRect(hwnd, null(), 0);
-            }
-        }
+        WM_MOUSELEAVE => hover(hwnd, null_mut()),
         WM_MOUSEWHEEL => page(if (wp >> 16) as i16 > 0 { -1 } else { 1 }),
         WM_LBUTTONUP => {
             let pt = POINT {
@@ -428,12 +462,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             });
             if let Some(w) = target {
                 hide();
-                if IsWindow(w) != 0 {
-                    if IsIconic(w) != 0 {
-                        ShowWindowAsync(w, SW_RESTORE);
-                    }
-                    SetForegroundWindow(w);
-                }
+                activate_window(w);
             } else {
                 let mut r: RECT = zeroed();
                 GetClientRect(hwnd, &mut r);

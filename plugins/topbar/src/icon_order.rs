@@ -61,7 +61,13 @@ fn read_order(name: &str) -> Vec<String> {
         }
         buf.split(|&c| c == 0)
             .take_while(|s| !s.is_empty())
-            .map(String::from_utf16_lossy)
+            .map(|raw| {
+                let key = String::from_utf16_lossy(raw);
+                if let Some((_, exe)) = key.strip_prefix("window:").and_then(|s| s.split_once(':')) {
+                    if !shared_host(exe) { return format!("app:{exe}"); }
+                }
+                key
+            })
             .collect()
     }
 }
@@ -254,8 +260,8 @@ pub(super) unsafe fn finish(bar: HWND, point: POINT) {
     }
     let to = target as usize - 1;
     if !d.moving {
-        if from == to && !d.dismissed_preview && !(settings::preferences().click_previews && previews::show(target)) {
-            click(target, true, false);
+        if from == to {
+            click_app(target, d.dismissed_preview);
         }
         return;
     }

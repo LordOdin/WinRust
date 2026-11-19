@@ -9,6 +9,13 @@ const FULL: i32 = 112;
 const SECONDARY: i32 = 113;
 const DISPLAYS: i32 = 114;
 const TILE: i32 = 115;
+const CLICK_PREVIEWS: i32 = 116;
+const DRIFT: i32 = 117;
+const SHUFFLE: i32 = 118;
+const HIDE_SEARCH: i32 = 119;
+const HIDE_START: i32 = 120;
+const HOVER_TRAY: i32 = 121;
+const HOVER_GEAR: i32 = 122;
 const KEY: &str = r"Software\WinRust\Topbar";
 const VALUE: &str = "LayoutV1";
 
@@ -16,6 +23,13 @@ const VALUE: &str = "LayoutV1";
 pub(super) struct Preferences {
     pub hide_fullscreen: bool,
     pub expand_secondary: bool,
+    pub click_previews: bool,
+    pub drift: bool,
+    pub shuffle: bool,
+    pub hide_search: bool,
+    pub hide_start: bool,
+    pub hover_tray: bool,
+    pub hover_gear: bool,
     height_index: usize,
 }
 
@@ -25,10 +39,17 @@ impl Preferences {
     }
 
     fn decode(bits: u32) -> Self {
-        let index = (bits >> 2) as usize;
+        let index = ((bits >> 2) & 3) as usize;
         Self {
             hide_fullscreen: bits & 1 != 0,
             expand_secondary: bits & 2 != 0,
+            click_previews: bits & (1 << 4) != 0,
+            drift: bits & (1 << 5) != 0,
+            shuffle: bits & (1 << 6) != 0,
+            hide_search: bits & (1 << 7) != 0,
+            hide_start: bits & (1 << 8) != 0,
+            hover_tray: bits & (1 << 9) != 0,
+            hover_gear: bits & (1 << 10) != 0,
             height_index: if index < HEIGHTS.len() { index } else { 1 },
         }
     }
@@ -51,7 +72,16 @@ impl Preferences {
     }
 
     fn save(self) -> Result<(), std::io::Error> {
-        let bits = self.hide_fullscreen as u32 | ((self.expand_secondary as u32) << 1) | ((self.height_index as u32) << 2);
+        let bits = self.hide_fullscreen as u32
+            | ((self.expand_secondary as u32) << 1)
+            | ((self.height_index as u32) << 2)
+            | ((self.click_previews as u32) << 4)
+            | ((self.drift as u32) << 5)
+            | ((self.shuffle as u32) << 6)
+            | ((self.hide_search as u32) << 7)
+            | ((self.hide_start as u32) << 8)
+            | ((self.hover_tray as u32) << 9)
+            | ((self.hover_gear as u32) << 10);
         let err = unsafe {
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,
@@ -93,7 +123,17 @@ unsafe fn sync_controls(dlg: HWND) {
     let style_index = i18n::style::ALL.iter().position(|s| *s == style()).unwrap_or(0);
     SendDlgItemMessageW(dlg, STYLE, CB_SETCURSEL, style_index, 0);
     SendDlgItemMessageW(dlg, HEIGHT, CB_SETCURSEL, prefs.height_index, 0);
-    for (id, checked) in [(FULL, prefs.hide_fullscreen), (SECONDARY, prefs.expand_secondary)] {
+    for (id, checked) in [
+        (FULL, prefs.hide_fullscreen),
+        (SECONDARY, prefs.expand_secondary),
+        (CLICK_PREVIEWS, prefs.click_previews),
+        (DRIFT, prefs.drift),
+        (SHUFFLE, prefs.shuffle),
+        (HIDE_SEARCH, prefs.hide_search),
+        (HIDE_START, prefs.hide_start),
+        (HOVER_TRAY, prefs.hover_tray),
+        (HOVER_GEAR, prefs.hover_gear),
+    ] {
         CheckDlgButton(dlg, id, if checked { BST_CHECKED } else { BST_UNCHECKED });
     }
 }
@@ -113,6 +153,15 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
                     (FULL, "Скрывать панель в полноэкранных приложениях"),
                     (SECONDARY, "Использовать всё место на экранах без панели WinRust"),
                     (1004, "Подключённые экраны"),
+                    (CLICK_PREVIEWS, "Открывать миниатюры по щелчку"),
+                    (DRIFT, "Сдвигать значки на 35 пикселей влево и вправо"),
+                    (SHUFFLE, "Перемешивать значки при загрузке Windows"),
+                    (HIDE_SEARCH, "Скрыть значок поиска"),
+                    (HIDE_START, "Скрыть значок Пуска"),
+                    (HOVER_TRAY, "Показывать область уведомлений при наведении"),
+                    (HOVER_GEAR, "Показывать шестерёнку при наведении"),
+                    (1005, "Значки"),
+                    (1006, "Защита OLED"),
                     (TILE, "Разложить окна"),
                     (IDOK, "Закрыть"),
                 ] {
@@ -147,7 +196,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
                         place(bar);
                     }
                 }
-                HEIGHT | FULL | SECONDARY
+                HEIGHT | FULL | SECONDARY | CLICK_PREVIEWS..=HOVER_GEAR
                     if (id == HEIGHT && notification == CBN_SELCHANGE) || (id != HEIGHT && notification == BN_CLICKED) =>
                 {
                     let index = SendDlgItemMessageW(dlg, HEIGHT, CB_GETCURSEL, 0, 0) as usize;
@@ -155,6 +204,13 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
                         return 1;
                     }
                     let prefs = Preferences {
+                        click_previews: IsDlgButtonChecked(dlg, CLICK_PREVIEWS) == BST_CHECKED,
+                        drift: IsDlgButtonChecked(dlg, DRIFT) == BST_CHECKED,
+                        shuffle: IsDlgButtonChecked(dlg, SHUFFLE) == BST_CHECKED,
+                        hide_search: IsDlgButtonChecked(dlg, HIDE_SEARCH) == BST_CHECKED,
+                        hide_start: IsDlgButtonChecked(dlg, HIDE_START) == BST_CHECKED,
+                        hover_tray: IsDlgButtonChecked(dlg, HOVER_TRAY) == BST_CHECKED,
+                        hover_gear: IsDlgButtonChecked(dlg, HOVER_GEAR) == BST_CHECKED,
                         height_index: index,
                         hide_fullscreen: IsDlgButtonChecked(dlg, FULL) == BST_CHECKED,
                         expand_secondary: IsDlgButtonChecked(dlg, SECONDARY) == BST_CHECKED,
@@ -171,6 +227,9 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
                         if !prefs.expand_secondary {
                             displays::restore();
                         }
+                        previews::hide();
+                        HOT.set(NONE);
+                        refresh_buttons();
                         place(bar);
                         displays::reconcile(&displays::secondary_trays());
                         fs_update(bar);

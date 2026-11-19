@@ -21,6 +21,7 @@ use winrust_common as i18n;
 use winrust_common::style::{Style, pal, style, ui_face};
 mod fly;
 mod previews;
+mod icon_order;
 mod displays;
 mod settings;
 use windows::{
@@ -118,6 +119,7 @@ struct Pin {
     icon: HICON,
 }
 struct Btn {
+    key: String,
     pin: Option<usize>,
     wins: Vec<HWND>,
     icon: HICON, // the window's icon for unpinned buttons, looked up on refresh, not every animation frame
@@ -1017,8 +1019,8 @@ unsafe fn load_pins() {
 fn refresh_buttons() {
     let mut wins: Vec<HWND> = Vec::new();
     unsafe { EnumWindows(Some(collect), &mut wins as *mut _ as LPARAM) };
-    let mut btns = vec![Btn { pin: None, wins: vec![], icon: null_mut() }];
-    PINS.with_borrow(|pins| btns.extend((0..pins.len()).map(|i| Btn { pin: Some(i), wins: vec![], icon: null_mut() })));
+    let mut btns = vec![Btn { key:String::new(), pin: None, wins: vec![], icon: null_mut() }];
+    PINS.with_borrow(|pins| btns.extend((0..pins.len()).map(|i| Btn { key:format!("pin:{}", wstr_of(&pins[i].lnk).to_lowercase()), pin: Some(i), wins: vec![], icon: null_mut() })));
     let mut loose: Vec<HWND> = Vec::new();
     for w in wins {
         let exe = unsafe { exe_of(w) };
@@ -1032,8 +1034,9 @@ fn refresh_buttons() {
     ORDER.with_borrow_mut(|o| {
         o.retain(|w| loose.contains(w));
         o.extend(loose.iter().filter(|w| !o.contains(w)).copied().collect::<Vec<_>>());
-        btns.extend(o.iter().map(|&w| Btn { pin: None, wins: vec![w], icon: unsafe { win_icon(w) } }));
+        btns.extend(o.iter().map(|&w| Btn { key:format!("window:{:x}:{}",w as usize,unsafe{exe_of(w)}), pin: None, wins: vec![w], icon: unsafe { win_icon(w) } }));
     });
+    icon_order::apply(&mut btns[1..]);
     BTNS.set(btns);
 }
 
@@ -1293,19 +1296,45 @@ struct Layout {
     clock: (i32, i32),
 }
 
+impl Layout {
+    fn button_x(&self, index: i32) -> i32 {
+        let p = settings::preferences();
+        self.x0 + (index + i32::from(!p.hide_search) - i32::from(p.hide_start)) * (self.bw + self.gap)
+    }
+}
+
+thread_local! { static DRIFT_OFFSET: Cell<i32> = const { Cell::new(0) }; }
+
+unsafe fn advance_drift(bar: HWND) {
+    if !settings::preferences().drift { DRIFT_OFFSET.set(0); return; }
+    let mut pt:POINT=zeroed();
+    GetCursorPos(&mut pt);
+    if WindowFromPoint(pt)==bar || icon_order::pending() || previews::visible() { return; }
+    // One physical pixel every ten seconds; no continuous animation or extra wakeups.
+    let phase=(GetTickCount64()/10_000 % 140) as i32;
+    DRIFT_OFFSET.set(35 - (phase - 70).abs());
+}
+
 fn layout(w: i32) -> Layout {
     let gap = sc(4);
     let clock = (w - sc(96), w - sc(6));
     let sys = (clock.0 - sc(4) - sc(150 + if BAT.get().0 >= 0 { 66 } else { 0 }), clock.0 - sc(4));
     let apps = (sys.0 - sc(24) * tray_count() as i32, sys.0);
     let margin = (w - apps.0) + sc(8); // keep the button group centered and clear of both sides
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + 1; // + the search slot
+    let p=settings::preferences();
+    let extra=i32::from(!p.hide_search) - i32::from(p.hide_start);
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + extra;
     let bw = (((w - 2 * margin + gap) / n.max(1)) - gap).clamp(sc(16), sc(44));
     // centered on search + Start + pins only: opening an unpinned window adds a button on the right instead of shifting Start left
-    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + 2).min(n);
+    let fixed = (PINS.with_borrow(|p| p.len()) as i32 + 1 + extra).min(n);
     // ...but never so far right that the windows' buttons run into the tray: then the whole row shifts left
     let right_limit = w - margin - (n * (bw + gap) - gap);
-    Layout { x0: ((w - (fixed * (bw + gap) - gap)) / 2).min(right_limit).max(sc(GEAR_X.0 + GEAR_X.1 + 6)), bw, gap, apps, sys, clock } // clear of the gear
+    let left=sc(GEAR_X.0 + GEAR_X.1 + 6);
+    let room = (right_limit - left).max(0);
+    let travel = if p.drift { 35.min(room / 2) } else { 0 };
+    let center = ((w - (fixed * (bw + gap) - gap)) / 2).clamp(left + travel, left + room - travel);
+    let drift = DRIFT_OFFSET.get().clamp(-travel, travel);
+    Layout { x0: (center+drift).clamp(left,right_limit.max(left)), bw, gap, apps, sys, clock } // clear of the gear
 }
 
 unsafe fn hit(hwnd: HWND, x: i32) -> i32 {
@@ -1325,9 +1354,11 @@ unsafe fn hit(hwnd: HWND, x: i32) -> i32 {
     if x >= l.apps.0 {
         return TAPP + (x - l.apps.0) / sc(24);
     }
-    let n = BTNS.with_borrow(|b| b.len()) as i32 + 1;
+    let p=settings::preferences();
+    let search=i32::from(!p.hide_search);
+    let n = BTNS.with_borrow(|b| b.len()) as i32 + search - i32::from(p.hide_start);
     let (d, i) = (x - l.x0, (x - l.x0) / (l.bw + l.gap));
-    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i == 0 { SEARCH } else { i - 1 }
+    if d < 0 || d % (l.bw + l.gap) >= l.bw || i >= n { NONE } else if i < search { SEARCH } else { i - search + i32::from(p.hide_start) }
 }
 
 // ---------- animation ----------
@@ -1764,6 +1795,7 @@ unsafe fn view_sig() -> u64 {
     BTNS.with_borrow(|b| b.iter().for_each(|b| (b.pin, b.icon as usize, b.wins.iter().map(|&w| (w as usize, IsIconic(w))).collect::<Vec<_>>()).hash(&mut h)));
     (GetForegroundWindow() as usize, BAT.get(), VOL.get(), WIFI.get(), INET.get(), EXPLORER_UP.load(Relaxed), clock_texts(), lang_name()).hash(&mut h);
     TAPPS.with_borrow(|t| t.iter().for_each(|x| (x.hwnd as usize, x.uid, x.icon as usize, x.hidden, &x.tip).hash(&mut h)));
+    DRIFT_OFFSET.get().hash(&mut h);
     h.finish()
 }
 
@@ -1809,22 +1841,30 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: settings
-    let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
-    glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-
-    // search button (left of Start)
-    let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
-    glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
-
+    let prefs=settings::preferences();
+    if !prefs.hover_gear || hot == GEAR {
+        // the gear at the left end: settings
+        let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
+        glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E713}", gr, if hot == GEAR { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
+    if !prefs.hide_search {
+        // search button (left of Start)
+        let sb = RECT { left: l.x0, top, right: l.x0 + l.bw, bottom: bot };
+        glow(dc, SEARCH, hot == SEARCH, sb, pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        text(dc, "\u{E721}", sb, if hot == SEARCH { pal().text } else { mix(pal().dim, pal().text, 0.5) }, DT_CENTER);
+    }
+    let marker = icon_order::marker();
     // Start, pinned apps, open windows (center)
     BTNS.with_borrow(|btns| {
         for (i, b) in btns.iter().enumerate() {
-            let x = l.x0 + (i as i32 + 1) * (l.bw + l.gap);
+            if i==0 && prefs.hide_start {continue;}
+            let x = l.button_x(i as i32);
+            if marker.as_deref() == Some(b.key.as_str()) {
+                fill(dc, RECT { left: x, right: x + l.bw, top: bot - sc(2), bottom: bot }, pal().accent, 0);
+            }
             let r = RECT { left: x, top, right: x + l.bw, bottom: bot };
             let act = b.wins.contains(&fg);
             let (th, ta, tp) = (hv(i as i32, hot == i as i32), hv(2000 + i as i32, act), press_t(i as i32));
@@ -1866,69 +1906,70 @@ unsafe fn paint(hwnd: HWND) {
         }
     });
 
-    // a hairline between the app buttons and the tray side
-    fill(dc, RECT { left: l.apps.0 - sc(5), top: mid - sc(9), right: l.apps.0 - sc(5) + 1, bottom: mid + sc(9) }, pal().line, 0);
+    if !prefs.hover_tray || (TAPP..TAPP+100).contains(&hot) || matches!(hot, LANG | BAT_I | WIFI_I | VOL_I | CLOCK) {
+        // a hairline between the app buttons and the tray side
+        fill(dc, RECT { left: l.apps.0 - sc(5), top: mid - sc(9), right: l.apps.0 - sc(5) + 1, bottom: mid + sc(9) }, pal().line, 0);
 
-    // tray apps
-    glow(dc, TAPP, hot == TAPP, cell(l.apps.0, sc(24)), pal().bg, pal().hover, sc(8));
-    SelectObject(dc, f_glyph);
-    let open_tf = IsWindowVisible(TRAYFLY.get()) != 0;
-    let turn = ease(hv(TF_KEY, open_tf)); // the chevron turns over as the flyout opens, and back
-    let cc = cell(l.apps.0, sc(24));
-    chevron(dc, (cc.left + cc.right) / 2, mid, sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
-    SelectObject(dc, f_txt);
-    let bar = bar_idx();
-    TAPPS.with_borrow(|t| {
-        for (k, &ix) in bar.iter().enumerate() {
-            let (i, ti) = (k + 1, &t[ix]);
-            let x = l.apps.0 + i as i32 * sc(24);
-            glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(x, sc(24)), pal().bg, pal().hover, sc(8));
-            if !ti.icon.is_null() {
-                DrawIconEx(dc, x + sc(4), mid - sc(8), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
-            }
-        }
-    });
-
-    // system group: language on its own, then one pill for wifi + volume + battery (like Windows 11: they open one panel)
-    let tb = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
-    glow(dc, LANG, hot == LANG, RECT { left: tb.left, top, right: tb.left + sc(42), bottom: bot }, pal().bg, pal().hover, sc(8));
-    let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
-    let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
-    if tg > 0.01 || pg > 0.0 {
-        fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
-    }
-    let mut x = tb.left + sc(10);
-    text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
-    x += sc(42);
-    net_icon(dc, x + sc(9), mid, sc(17), f_glyph);
-    x += sc(32);
-    SelectObject(dc, f_glyph);
-    let (vol, muted) = VOL.get();
-    let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
-    text(dc, vg, cell(x, sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
-    x += sc(32);
-    let (pct, ac) = BAT.get();
-    if pct >= 0 {
-        let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
-        let (bw, bh, by) = (sc(22), sc(11), mid - sc(5));
-        fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
-        fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
-        let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
-        fill(dc, RECT { left: x + sc(2), top: by + sc(2), right: x + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
-        fill(dc, RECT { left: x + bw + sc(1), top: by + sc(3), right: x + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1)); // terminal nub
+        // tray apps
+        glow(dc, TAPP, hot == TAPP, cell(l.apps.0, sc(24)), pal().bg, pal().hover, sc(8));
+        SelectObject(dc, f_glyph);
+        let open_tf = IsWindowVisible(TRAYFLY.get()) != 0;
+        let turn = ease(hv(TF_KEY, open_tf)); // the chevron turns over as the flyout opens, and back
+        let cc = cell(l.apps.0, sc(24));
+        chevron(dc, (cc.left + cc.right) / 2, mid, sc(5), if at_top() { 180.0 } else { 0.0 } + 180.0 * turn, mix(pal().text, pal().accent, turn));
         SelectObject(dc, f_txt);
-        text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(40)), pal().text, DT_LEFT);
+        let bar = bar_idx();
+        TAPPS.with_borrow(|t| {
+            for (k, &ix) in bar.iter().enumerate() {
+                let (i, ti) = (k + 1, &t[ix]);
+                let x = l.apps.0 + i as i32 * sc(24);
+                glow(dc, TAPP + i as i32, hot == TAPP + i as i32, cell(x, sc(24)), pal().bg, pal().hover, sc(8));
+                if !ti.icon.is_null() {
+                    DrawIconEx(dc, x + sc(4), mid - sc(8), ti.icon, sc(16), sc(16), 0, null_mut(), DI_NORMAL);
+                }
+            }
+        });
+
+        // system group: language on its own, then one pill for wifi + volume + battery (like Windows 11: they open one panel)
+        let tb = RECT { left: l.sys.0, top, right: l.sys.1, bottom: bot };
+        glow(dc, LANG, hot == LANG, RECT { left: tb.left, top, right: tb.left + sc(42), bottom: bot }, pal().bg, pal().hover, sc(8));
+        let grp = RECT { left: tb.left + sc(44), top, right: tb.right, bottom: bot };
+        let (tg, pg) = (hv(SYS_GRP, matches!(hot, WIFI_I | VOL_I | BAT_I) || fly::is_open(fly::Kind::Quick)), press_t(WIFI_I).max(press_t(VOL_I)).max(press_t(BAT_I)));
+        if tg > 0.01 || pg > 0.0 {
+            fill(dc, grp, mix(mix(pal().bg, pal().hover, tg), pal().accent, 0.5 * pg), sc(8));
+        }
+        let mut x = tb.left + sc(10);
+        text(dc, &lang_name(), cell(x, sc(34)), pal().text, DT_LEFT);
+        x += sc(42);
+        net_icon(dc, x + sc(9), mid, sc(17), f_glyph);
+        x += sc(32);
+        SelectObject(dc, f_glyph);
+        let (vol, muted) = VOL.get();
+        let vg = if muted || vol == 0 { "\u{E74F}" } else if vol < 34 { "\u{E993}" } else if vol < 67 { "\u{E994}" } else { "\u{E995}" };
+        text(dc, vg, cell(x, sc(22)), if muted { BAD } else { pal().text }, DT_CENTER);
+        x += sc(32);
+        let (pct, ac) = BAT.get();
+        if pct >= 0 {
+            let col = if ac { GOOD } else if pct <= 15 { BAD } else { pal().text };
+            let (bw, bh, by) = (sc(22), sc(11), mid - sc(5));
+            fill(dc, RECT { left: x, top: by, right: x + bw, bottom: by + bh }, col, sc(4)); // outline
+            fill(dc, RECT { left: x + sc(1), top: by + sc(1), right: x + bw - sc(1), bottom: by + bh - sc(1) }, mix(pal().bg, pal().hover, tg), sc(3));
+            let fw = ((bw - sc(4)) * pct / 100).max(sc(1));
+            fill(dc, RECT { left: x + sc(2), top: by + sc(2), right: x + sc(2) + fw, bottom: by + bh - sc(2) }, col, sc(2));
+            fill(dc, RECT { left: x + bw + sc(1), top: by + sc(3), right: x + bw + sc(3), bottom: by + bh - sc(3) }, col, sc(1)); // terminal nub
+            SelectObject(dc, f_txt);
+            text(dc, &format!("{pct}%"), cell(x + bw + sc(8), sc(40)), pal().text, DT_LEFT);
+        }
+
+        // time (semibold) over the date (dimmed)
+        let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
+        glow(dc, CLOCK, hot == CLOCK || fly::is_open(fly::Kind::Cal), cb, pal().bg, pal().hover, sc(8));
+        let (tm, dt) = clock_texts();
+        SelectObject(dc, f_bold);
+        text(dc, &tm, RECT { left: cb.left, top: cb.top, right: cb.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
+        SelectObject(dc, f_small);
+        text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
     }
-
-    // time (semibold) over the date (dimmed)
-    let cb = cell(l.clock.0, l.clock.1 - l.clock.0);
-    glow(dc, CLOCK, hot == CLOCK || fly::is_open(fly::Kind::Cal), cb, pal().bg, pal().hover, sc(8));
-    let (tm, dt) = clock_texts();
-    SelectObject(dc, f_bold);
-    text(dc, &tm, RECT { left: cb.left, top: cb.top, right: cb.right, bottom: mid + sc(1) }, pal().text, DT_CENTER);
-    SelectObject(dc, f_small);
-    text(dc, &dt, RECT { left: cb.left, top: mid - sc(1), right: cb.right, bottom: cb.bottom }, mix(pal().dim, pal().text, 0.35), DT_CENTER);
-
     BitBlt(wdc, 0, 0, cr.right, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, of);
     for f in [f_txt, f_small, f_glyph, f_bold] {
@@ -2313,7 +2354,7 @@ unsafe fn min_rect(info: *mut ShellHookInfo, bar: HWND) {
     let exe = exe_of(w);
     let i = BTNS.with_borrow(|b| b.iter().position(|b| b.wins.contains(&w)).or_else(|| b.iter().position(|b| !exe.is_empty() && b.wins.first().is_some_and(|&x| exe_of(x) == exe))));
     let x = match i {
-        Some(i) => l.x0 + (i as i32 + 1) * (l.bw + l.gap),
+        Some(i) => l.button_x(i as i32),
         None => (l.x0 + l.apps.0) / 2, // no button (yet): the middle of the bar
     };
     let (top, x) = (bar_top() + sc(4), x + bar_x_w().0);
@@ -2331,7 +2372,7 @@ unsafe fn tip_cx(l: &Layout, h: i32) -> i32 {
         VOL_I => l.sys.0 + sc(90),
         BAT_I => l.sys.0 + sc(130),
         t if (TAPP..TAPP + 100).contains(&t) => l.apps.0 + (t - TAPP) * sc(24) + sc(12),
-        i => l.x0 + (i + 1) * (l.bw + l.gap) + l.bw / 2,
+        i => l.button_x(i) + l.bw / 2,
     }
 }
 
@@ -2375,7 +2416,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER if wp == 2 => {
             KillTimer(hwnd, 2);
             let h = HOT.get();
-            if h != NONE && !fly::any_open() && !previews::show(h) {
+            if h != NONE && !fly::any_open() && !icon_order::pending() && (settings::preferences().click_previews || !previews::show(h)) {
                 show_tip(tip_text(h), tip_cx(&bar_layout(hwnd), h));
             }
         }
@@ -2409,6 +2450,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             refresh();
             // repaint (GDI+, the costly part) only when something shown changed; every 10th tick anyway as a safety net
             let (last, quiet) = SIG.get();
+            advance_drift(hwnd);
             let s = view_sig();
             if s != last || quiet >= 10 {
                 SIG.set((s, 0));
@@ -2417,7 +2459,20 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 SIG.set((s, quiet + 1));
             }
         }
+        WM_CAPTURECHANGED | WM_CANCELMODE if icon_order::pending() => {
+            icon_order::cancel();
+            if GetCapture()==hwnd {ReleaseCapture();}
+            InvalidateRect(hwnd,null(),0);
+        }
+        WM_LBUTTONUP if icon_order::pending() => {
+            icon_order::finish(hwnd,POINT{x:lp as i16 as i32,y:(lp>>16) as i16 as i32});
+            InvalidateRect(hwnd,null(),0);
+        }
         WM_MOUSEMOVE => {
+            if icon_order::pending() {
+                icon_order::motion(hwnd,POINT{x:lp as i16 as i32,y:(lp>>16) as i16 as i32});
+                return 0;
+            }
             let h = hit(hwnd, (lp & 0xffff) as i16 as i32);
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
@@ -2425,7 +2480,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 if h != NONE && !previews::showing(h) { previews::hide(); }
                 hide_tip(hwnd);
                 if h != NONE {
-                    SetTimer(hwnd, 2, 450, None);
+                    SetTimer(hwnd, 2, if h > 0 {225} else {450}, None);
                 }
                 InvalidateRect(hwnd, null(), 0);
             }
@@ -2453,7 +2508,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if h != NONE {
                 press(h);
             }
-            if h == NONE && msg == WM_RBUTTONDOWN {
+            if h > 0 && msg == WM_LBUTTONDOWN {
+                icon_order::begin(hwnd,h,POINT{x,y:(lp>>16) as i16 as i32});
+            } else if h == NONE && msg == WM_RBUTTONDOWN {
                 fly::context_menu(x); // right click on an empty spot
             } else if h >= 1 && msg == WM_RBUTTONDOWN {
                 app_menu(hwnd, h);

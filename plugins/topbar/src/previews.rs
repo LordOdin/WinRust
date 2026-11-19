@@ -178,6 +178,8 @@ unsafe fn layout() {
     InvalidateRect(hwnd, null(), 0);
 }
 
+pub(super) fn visible() -> bool { GROUP.with_borrow(|g|g.is_some()) }
+
 pub(super) fn showing(button: i32) -> bool {
     GROUP.with_borrow(|state| state.as_ref().is_some_and(|g| g.button == button))
 }

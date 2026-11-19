@@ -20,6 +20,7 @@ extern crate winrust_common;
 use winrust_common as i18n;
 use winrust_common::style::{Style, pal, style, ui_face};
 mod fly;
+mod previews;
 mod displays;
 mod settings;
 use windows::{
@@ -1473,6 +1474,7 @@ unsafe fn fs_update(hwnd: HWND) {
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
             fly::close_now();
+            previews::hide();
             hide_tip(hwnd);
         }
         bar_anim(hwnd);
@@ -2373,7 +2375,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_TIMER if wp == 2 => {
             KillTimer(hwnd, 2);
             let h = HOT.get();
-            if h != NONE && !fly::any_open() {
+            if h != NONE && !fly::any_open() && !previews::show(h) {
                 show_tip(tip_text(h), tip_cx(&bar_layout(hwnd), h));
             }
         }
@@ -2420,6 +2422,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut tme = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
             TrackMouseEvent(&mut tme);
             if HOT.replace(h) != h {
+                if h != NONE && !previews::showing(h) { previews::hide(); }
                 hide_tip(hwnd);
                 if h != NONE {
                     SetTimer(hwnd, 2, 450, None);
@@ -2445,6 +2448,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
             let x = (lp & 0xffff) as i16 as i32;
             let h = hit(hwnd, x);
+            previews::hide();
             hide_tip(hwnd);
             if h != NONE {
                 press(h);
@@ -2527,6 +2531,7 @@ fn main() {
         SHOWN.set(std::fs::read_to_string(appdata_file("topbar-tray.txt")).ok().map(|s| s.lines().map(str::to_string).collect()));
         load_pins();
         fly::init(GetModuleHandleW(null()));
+        previews::init(GetModuleHandleW(null()));
         thread::spawn(fly::load_apps);
         let hi = GetModuleHandleW(null());
         let class = wide("topbar");

@@ -115,9 +115,16 @@ static EXPLORER_UP: AtomicBool = AtomicBool::new(true); // explorer's taskbar ex
 
 struct Pin {
     lnk: Vec<u16>,
+    explorer_alias: bool,
     target: String, // lower-case exe path, "" if unknown
     icon: HICON,
 }
+impl Pin {
+    fn launch_path(&self) -> Vec<u16> {
+        if self.explorer_alias { wide(&self.target) } else { self.lnk.clone() }
+    }
+}
+
 struct Btn {
     key: String,
     pin: Option<usize>,
@@ -949,7 +956,13 @@ unsafe fn win_icon(w: HWND) -> HICON {
     if exe.is_empty() || HOSTS.iter().any(|h| exe.rsplit('\\').next() == Some(*h)) {
         return icon_of(w);
     }
-    let ic = EXE_ICONS.with_borrow_mut(|m| *m.entry(exe.clone()).or_insert_with(|| item_icon(&exe, icon_px())));
+    let ic = EXE_ICONS.with_borrow_mut(|m| *m.entry(exe.clone()).or_insert_with(|| {
+        if rust_explorer(&exe) {
+            let folder = folder_icon(&exe);
+            if !folder.is_null() { return folder; }
+        }
+        item_icon(&exe, icon_px())
+    }));
     if ic.is_null() { icon_of(w) } else { ic }
 }
 
@@ -1000,6 +1013,36 @@ unsafe fn fix_msix_pin(lnk: &[u16], target: &str) -> Option<String> {
     Some(new)
 }
 
+fn rust_explorer(exe: &str) -> bool {
+    exe.rsplit('\\').next() == Some("rust-explorer.exe")
+}
+
+unsafe fn folder_icon(exe: &str) -> HICON {
+    let mut icon = null_mut();
+    PrivateExtractIconsW(wide(exe).as_ptr(), 0, icon_px(), icon_px(), &mut icon, null_mut(), 1, 0);
+    icon
+}
+
+unsafe fn replacement_explorer() -> Option<String> {
+    use windows_sys::Win32::System::Registry::*;
+    let mut enabled = 0u32;
+    let mut bytes = 4;
+    let status = RegGetValueW(HKEY_CURRENT_USER, wide(r"Software\rs-shell").as_ptr(), wide("ReplaceExplorer").as_ptr(),
+        RRF_RT_REG_DWORD, null_mut(), &mut enabled as *mut _ as _, &mut bytes);
+    if status != ERROR_SUCCESS || enabled != 1 { return None; }
+    let path = PathBuf::from(std::env::var_os("ProgramFiles")?).join(r"rust-explorer\rust-explorer.exe");
+    path.is_file().then(|| path.to_string_lossy().to_lowercase())
+}
+
+unsafe fn is_explorer_pin(lnk: &[u16]) -> bool {
+    use windows::Win32::{Storage::EnhancedStorage::PKEY_AppUserModel_ID, System::Com::CoTaskMemFree, UI::Shell::{IShellItem2, SHCreateItemFromParsingName}};
+    let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem2>(PCWSTR(lnk.as_ptr()), None) else { return false };
+    let Ok(id) = item.GetString(&PKEY_AppUserModel_ID) else { return false };
+    let matches = id.to_string().is_ok_and(|s| s == "Microsoft.Windows.Explorer");
+    CoTaskMemFree(Some(id.0.cast()));
+    matches
+}
+
 /// Pinned apps (the .lnk files Windows keeps for the taskbar) with their icons and target exe.
 unsafe fn load_pins() {
     let Some(appdata) = std::env::var_os("APPDATA") else { return };
@@ -1007,12 +1050,15 @@ unsafe fn load_pins() {
     let mut files: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk"))).collect();
     files.sort();
     files.sort_by_key(|f| std::cmp::Reverse(lnk_uses(f))); // most used first (stable: ties stay alphabetical)
+    let replacement = replacement_explorer();
     for f in files {
         let lnk = wide(&f.to_string_lossy());
         let target = lnk_target(&lnk);
-        let target = fix_msix_pin(&lnk, &target).unwrap_or(target);
-        let icon = lnk_icon(&lnk, &target);
-        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, icon }));
+        let alias = replacement.as_ref().filter(|_| is_explorer_pin(&lnk));
+        let target = alias.cloned().or_else(|| fix_msix_pin(&lnk, &target)).unwrap_or(target);
+        let icon = if rust_explorer(&target) { folder_icon(&target) } else { null_mut() };
+        let icon = if icon.is_null() { lnk_icon(&lnk, &target) } else { icon };
+        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target, icon, explorer_alias: alias.is_some() }));
     }
 }
 
@@ -1034,7 +1080,21 @@ fn refresh_buttons() {
     ORDER.with_borrow_mut(|o| {
         o.retain(|w| loose.contains(w));
         o.extend(loose.iter().filter(|w| !o.contains(w)).copied().collect::<Vec<_>>());
-        btns.extend(o.iter().map(|&w| Btn { key:format!("window:{:x}:{}",w as usize,unsafe{exe_of(w)}), pin: None, wins: vec![w], icon: unsafe { win_icon(w) } }));
+        let mut folders = HashMap::<String, usize>::new();
+        for &w in o.iter() {
+            let exe = unsafe { exe_of(w) };
+            let key = if rust_explorer(&exe) {
+                if let Some(&i) = folders.get(&exe) {
+                    btns[i].wins.push(w);
+                    continue;
+                }
+                folders.insert(exe.clone(), btns.len());
+                format!("app:{exe}")
+            } else {
+                format!("window:{:x}:{exe}", w as usize)
+            };
+            btns.push(Btn { key, pin: None, wins: vec![w], icon: unsafe { win_icon(w) } });
+        }
     });
     icon_order::apply(&mut btns[1..]);
     BTNS.set(btns);
@@ -2064,8 +2124,9 @@ unsafe fn app_menu(hwnd: HWND, h: i32) {
     }
     let (wins, pin, bicon) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin, b.icon)).unwrap_or((vec![], None, null_mut())));
     let exe = wins.first().map(|&w| exe_of(w)).unwrap_or_default();
-    let (lnk, picon) = pin.and_then(|p| PINS.with_borrow(|p2| p2.get(p).map(|x| (wstr_of(&x.lnk), x.icon)))).unwrap_or_default();
-    let launch = if lnk.is_empty() { exe.clone() } else { lnk.clone() };
+    let (lnk, launch, picon) = pin.and_then(|p| PINS.with_borrow(|pins| pins.get(p).map(|pin|
+        (wstr_of(&pin.lnk), wstr_of(&pin.launch_path()), pin.icon)
+    ))).unwrap_or_else(|| (String::new(), exe.clone(), null_mut()));
     let stem = std::path::Path::new(&launch).file_stem().unwrap_or_default().to_string_lossy().to_string();
     let name: String = stem.chars().take(1).flat_map(char::to_uppercase).chain(stem.chars().skip(1)).collect();
     let sub = match (wins.len(), pin.is_some()) {
@@ -2179,7 +2240,7 @@ unsafe fn pin_exe(path: &str) {
     })();
     if ok.is_some() {
         let icon = lnk_icon(&lnk, exe);
-        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target: exe.to_string(), icon }));
+        PINS.with_borrow_mut(|p| p.push(Pin { lnk, target: exe.to_string(), icon, explorer_alias: false }));
     }
 }
 
@@ -2314,13 +2375,17 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
             }
         }
         1.. => {
-            let (wins, lnk) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin.and_then(|p| PINS.with_borrow(|p2| p2.get(p).map(|x| x.lnk.clone()))))).unwrap_or_default());
+            let (wins, pin_index) = BTNS.with_borrow(|b| b.get(h as usize).map(|b| (b.wins.clone(), b.pin)).unwrap_or_default());
             match (wins.first(), left) {
                 // not running: launch the pinned app (a Store app may have updated since the pins were loaded)
-                (None, true) => lnk.iter().for_each(|l| {
-                    PINS.with_borrow_mut(|p| p.iter_mut().filter(|x| x.lnk == *l).for_each(|x| x.target = fix_msix_pin(l, &x.target).unwrap_or(std::mem::take(&mut x.target))));
-                    open(l)
-                }),
+                (None, true) => {
+                    let launch = pin_index.and_then(|i| PINS.with_borrow_mut(|pins| {
+                        let pin = pins.get_mut(i)?;
+                        if let Some(target) = fix_msix_pin(&pin.lnk, &pin.target) { pin.target = target; }
+                        Some(pin.launch_path())
+                    }));
+                    if let Some(path) = launch { open(&path); }
+                }
                 (Some(&w), false) => close_window(w), // right / middle click
                 (Some(&w), true) => {
                     // like the Windows taskbar: the active app's button minimizes it, a minimized one restores, any other raises

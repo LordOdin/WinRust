@@ -1206,7 +1206,13 @@ fn main() {
         let bg = if desktop { GetStockObject(BLACK_BRUSH) as _ } else { windows_sys::Win32::Graphics::Gdi::CreateSolidBrush(ui::pal().bg) };
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(ui::proc), hInstance: inst, lpszClassName: w("RxChrome").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(ui::nav_proc), hInstance: inst, lpszClassName: w("RxNav").as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), ..std::mem::zeroed() });
-        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: cls.as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), hbrBackground: bg, ..std::mem::zeroed() });
+        let folder_icon = |cx, cy| LoadImageW(inst, 101usize as _, IMAGE_ICON, GetSystemMetrics(cx), GetSystemMetrics(cy), LR_SHARED) as HICON;
+        RegisterClassExW(&WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: cls.as_ptr(),
+            hIcon: folder_icon(SM_CXICON, SM_CYICON), hIconSm: folder_icon(SM_CXSMICON, SM_CYSMICON),
+            hCursor: LoadCursorW(0 as _, IDC_ARROW), hbrBackground: bg, ..std::mem::zeroed()
+        });
         if desktop {
             DESKTOP.store(true, Relaxed);
             // the whole screen: it paints the wallpaper too; the icon list sits above the bar (desk_top / desk_bottom)

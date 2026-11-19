@@ -20,6 +20,8 @@ extern crate winrust_common;
 use winrust_common as i18n;
 use winrust_common::style::{Style, pal, style, ui_face};
 mod fly;
+mod displays;
+mod settings;
 use windows::{
     Win32::{
         Media::Audio::{Endpoints::IAudioEndpointVolume, IMMDeviceEnumerator, MMDeviceEnumerator, eConsole, eRender},
@@ -87,7 +89,6 @@ const WARN: u32 = rgb(255, 196, 0);
 const CALLBACK: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3; // not exported under the enabled features
 const NO_WINDOW: u32 = 0x0800_0000;
-const BAR_H: i32 = 40;
 // hit-test results. Buttons (Start, pins, windows) are >= 0 in left-to-right order; tray apps are TAPP + index.
 const NONE: i32 = -1;
 const SEARCH: i32 = -10;
@@ -97,7 +98,7 @@ const WIFI_I: i32 = -7;
 const VOL_I: i32 = -8;
 const BAT_I: i32 = -9;
 const TAPP: i32 = -1000;
-const GEAR: i32 = -12; // the gear at the left end: the Style menu
+const GEAR: i32 = -12; // the gear at the left end: settings
 const GEAR_X: (i32, i32) = (6, 36); // its left edge and width, before scaling (sc() is applied where used)
 const SYS_GRP: i32 = -11; // hover key of the one pill around wifi + volume + battery (they open the same panel)
 const WIN_START: u32 = WM_APP + 10; // posted by the keyboard hook: Win key pressed alone
@@ -214,7 +215,7 @@ fn sc(v: i32) -> i32 {
     (v as f32 * SCALE.get()) as i32
 }
 fn bar_h() -> i32 {
-    sc(BAR_H)
+    sc(settings::preferences().height())
 }
 /// Screen y of the bar's top edge when it is in place (bottom of the primary monitor, or its top in the tiling style).
 unsafe fn bar_top() -> i32 {
@@ -234,8 +235,10 @@ unsafe fn find_other(class: &str) -> HWND {
     }
 }
 
-unsafe fn tray() -> [HWND; 2] {
-    [find_other("Shell_TrayWnd"), find_other("Shell_SecondaryTrayWnd")]
+unsafe fn native_trays() -> Vec<HWND> {
+    let mut trays = displays::secondary_trays();
+    trays.push(find_other("Shell_TrayWnd"));
+    trays
 }
 
 /// Tells every app to re-register its tray icon with whichever Shell_TrayWnd is found first.
@@ -546,7 +549,7 @@ unsafe fn tip_text(h: i32) -> String {
         SEARCH => "Search".into(),
         0 => "Start".into(),
         TAPP => "Hidden icons".into(),
-        GEAR => t!("Стиль", "Style").into(),
+        GEAR => t!("Настройки", "Settings").into(),
         CLOCK => {
             let mut t: SYSTEMTIME = zeroed();
             GetLocalTime(&mut t);
@@ -715,24 +718,27 @@ unsafe fn set_state(hwnd: HWND, state: usize) {
 
 /// Hides the real taskbar and sets it to auto-hide so Windows gives its work-area strip back.
 unsafe fn hide_taskbar() {
-    set_state(tray()[0], ABS_AUTOHIDE as usize);
-    for t in tray().into_iter().filter(|t| !t.is_null()) {
+    set_state(find_other("Shell_TrayWnd"), ABS_AUTOHIDE as usize);
+    for t in native_trays().into_iter().filter(|t| !t.is_null()) {
         ShowWindow(t, SW_HIDE);
     }
 }
 
 unsafe fn show_taskbar(state: usize) {
-    set_state(tray()[0], state);
-    for t in tray().into_iter().filter(|t| !t.is_null()) {
+    set_state(find_other("Shell_TrayWnd"), state);
+    for t in native_trays().into_iter().filter(|t| !t.is_null()) {
         ShowWindow(t, SW_SHOWNA);
     }
 }
 
 // explorer re-shows its taskbar on hover / restart; hide it again
 unsafe fn hide_taskbar_if_shown() {
-    if tray().into_iter().any(|t| !t.is_null() && IsWindowVisible(t) != 0) {
+    let trays = displays::secondary_trays();
+    let primary = find_other("Shell_TrayWnd");
+    if std::iter::once(&primary).chain(&trays).any(|&h| !h.is_null() && IsWindowVisible(h) != 0) {
         hide_taskbar();
     }
+    displays::reconcile(&trays);
 }
 
 /// Reserves the bottom strip of the primary monitor (maximized windows stay above it).
@@ -1463,7 +1469,7 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
 }
 
 unsafe fn fs_update(hwnd: HWND) {
-    let fs = fullscreen_now(hwnd);
+    let fs = settings::preferences().hide_fullscreen && fullscreen_now(hwnd);
     if FULLSCREEN.swap(fs, Relaxed) != fs {
         if fs {
             fly::close_now();
@@ -1801,7 +1807,7 @@ unsafe fn paint(hwnd: HWND) {
     let hot = HOT.get();
     let active_bg = mix(pal().active, pal().accent, 0.12); // the focused app's button: a hint of the accent, not plain grey
 
-    // the gear at the left end: the Style menu
+    // the gear at the left end: settings
     let gr = RECT { left: sc(GEAR_X.0), top, right: sc(GEAR_X.0 + GEAR_X.1), bottom: bot };
     glow(dc, GEAR, hot == GEAR, gr, pal().bg, pal().hover, sc(8));
     SelectObject(dc, f_glyph);
@@ -2211,22 +2217,6 @@ unsafe fn open_launcher() -> bool {
     true
 }
 
-/// The gear's menu: the UI style (saved for the other WinRust programs) and putting the windows side by side.
-unsafe fn style_menu() {
-    let bar = BAR.load(Relaxed) as HWND;
-    let names = [t!("Обычный", "Normal"), t!("Терминал", "Terminal"), t!("Плавающий док", "Floating dock"), t!("Тайлинг", "Tiling")];
-    let mut items: Vec<fly::MItem> = i18n::style::ALL.iter().zip(names).map(|(&s, n)| fly::MItem::new(n).on(s == style())).collect();
-    items.push(fly::MItem::new(t!("Разложить окна плиткой", "Tile the windows")).sep());
-    let head = (null_mut(), "\u{E713}", t!("Стиль", "Style").to_string(), t!("Вид панели и программ WinRust", "Look of the bar and the WinRust programs").to_string());
-    fly::menu(tip_cx(&bar_layout(bar), GEAR), Some(head), items, move |i| match i18n::style::ALL.get(i) {
-        Some(&s) => {
-            i18n::style::set_style(s);
-            place(bar);
-        }
-        None => tile_windows(),
-    });
-}
-
 /// Puts the open, not minimized windows side by side in the work area.
 unsafe fn tile_windows() {
     let wins: Vec<HWND> = BTNS.with_borrow(|b| b.iter().flat_map(|b| b.wins.iter().copied()).filter(|&w| IsIconic(w) == 0).collect());
@@ -2259,7 +2249,7 @@ unsafe fn click(h: i32, left: bool, mid: bool) {
         WIFI_I => fly::toggle(if left { fly::Kind::Quick } else { fly::Kind::Wifi }), // right click: the network list
         VOL_I | BAT_I => fly::toggle(fly::Kind::Quick),
         CLOCK if left => fly::toggle(fly::Kind::Cal),
-        GEAR => style_menu(),
+        GEAR => settings::open(),
         TAPP..=-900 => {
             let slot = (h - TAPP) as usize;
             if slot == 0 {
@@ -2356,7 +2346,7 @@ unsafe fn appbar_new(hwnd: HWND) {
     ab.hWnd = hwnd;
     ab.uCallbackMessage = CALLBACK;
     SHAppBarMessage(ABM_NEW, &mut ab);
-    EXP_TRAY.set(tray()[0]);
+    EXP_TRAY.set(find_other("Shell_TrayWnd"));
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -2369,7 +2359,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
     if msg != 0 && msg == TB_MSG.get() {
         // also our own announce(): act only when explorer's taskbar is a new window (explorer restarted / came back)
-        let t = tray()[0];
+        let t = find_other("Shell_TrayWnd");
         if !t.is_null() && t != EXP_TRAY.get() {
             appbar_new(hwnd);
             hide_taskbar();
@@ -2482,6 +2472,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             ab.hWnd = hwnd;
             SHAppBarMessage(ABM_REMOVE, &mut ab);
             release_manual_strip();
+            displays::restore();
             show_taskbar(OLD_STATE.get());
             DestroyWindow(HOST.replace(null_mut()));
             announce(); // icons go back to explorer's tray
@@ -2566,7 +2557,7 @@ fn main() {
         SWWND.set(CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, swc.as_ptr(), null(), WS_POPUP, 0, 0, 1, 1, null_mut(), null_mut(), hi, null()));
         let mut ab: APPBARDATA = zeroed();
         ab.cbSize = size_of::<APPBARDATA>() as u32;
-        ab.hWnd = tray()[0];
+        ab.hWnd = find_other("Shell_TrayWnd");
         OLD_STATE.set(SHAppBarMessage(ABM_GETSTATE, &mut ab));
         appbar_new(hwnd);
         // Without explorer nobody is the "taskman" window, so Windows treats minimized windows as loose icons and leaves
@@ -2594,6 +2585,7 @@ fn main() {
         });
         let mut m: MSG = zeroed();
         while GetMessageW(&mut m, null_mut(), 0, 0) > 0 {
+            if settings::handles(&m) { continue; }
             TranslateMessage(&m);
             DispatchMessageW(&m);
         }

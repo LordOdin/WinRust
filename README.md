@@ -48,7 +48,7 @@ Every change is reversible: uninstall puts back the values that were there befor
 
 ## Styles
 
-The gear at the left end of the bar opens **Style**. The choice applies at once to the bar, the file manager (rust-explorer) and the search window (Alt+Space):
+Click the gear at the left end of the bar to open **WinRust Settings**. Adjust the bar height, fullscreen behavior, and usable space on secondary displays. The display list shows each monitor’s resolution and current usable area. Style changes also apply to the file manager and search window.
 
 | Style | Look |
 |---|---|

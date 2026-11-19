@@ -1,26 +1,19 @@
 use super::*;
 use windows_sys::Win32::System::Registry::*;
-use windows_sys::Win32::UI::Controls::{BST_CHECKED, BST_UNCHECKED, CheckDlgButton, IsDlgButtonChecked};
+use windows_sys::Win32::UI::Controls::*;
 
 const HEIGHTS: [i32; 3] = [36, 40, 48];
 const STYLE: i32 = 110;
 const HEIGHT: i32 = 111;
-const FULL: i32 = 112;
-const SECONDARY: i32 = 113;
 const DISPLAYS: i32 = 114;
 const TILE: i32 = 115;
-const CLICK_PREVIEWS: i32 = 116;
-const DRIFT: i32 = 117;
-const SHUFFLE: i32 = 118;
-const HIDE_SEARCH: i32 = 119;
-const HIDE_START: i32 = 120;
-const HOVER_TRAY: i32 = 121;
-const HOVER_GEAR: i32 = 122;
+const OPTIONS: i32 = 123;
 const KEY: &str = r"Software\WinRust\Topbar";
 const VALUE: &str = "LayoutV1";
 
 #[derive(Clone, Copy)]
 pub(super) struct Preferences {
+    pub auto_hide: bool,
     pub hide_fullscreen: bool,
     pub expand_secondary: bool,
     pub click_previews: bool,
@@ -41,6 +34,7 @@ impl Preferences {
     fn decode(bits: u32) -> Self {
         let index = ((bits >> 2) & 3) as usize;
         Self {
+            auto_hide: bits & (1 << 11) != 0,
             hide_fullscreen: bits & 1 != 0,
             expand_secondary: bits & 2 != 0,
             click_previews: bits & (1 << 4) != 0,
@@ -81,7 +75,8 @@ impl Preferences {
             | ((self.hide_search as u32) << 7)
             | ((self.hide_start as u32) << 8)
             | ((self.hover_tray as u32) << 9)
-            | ((self.hover_gear as u32) << 10);
+            | ((self.hover_gear as u32) << 10)
+            | ((self.auto_hide as u32) << 11);
         let err = unsafe {
             RegSetKeyValueW(
                 HKEY_CURRENT_USER,
@@ -103,65 +98,170 @@ impl Preferences {
 thread_local! {
     static PREFS: Cell<Preferences> = Cell::new(Preferences::read());
     static DIALOG: Cell<HWND> = const { Cell::new(null_mut()) };
-    static DISPLAY_TEXT: RefCell<String> = RefCell::new(String::new());
+    static DISPLAY_ROWS: RefCell<Vec<[String; 4]>> = const { RefCell::new(Vec::new()) };
+    static SYNCING: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(super) fn preferences() -> Preferences {
     PREFS.get()
 }
 
-unsafe fn display_text(dlg: HWND) {
-    let text = displays::summary();
-    if DISPLAY_TEXT.with_borrow(|old| *old != text) {
-        SetDlgItemTextW(dlg, DISPLAYS, wide(&text).as_ptr());
-        DISPLAY_TEXT.replace(text);
+type OptionRow = (&'static str, &'static str, fn(&mut Preferences) -> &mut bool);
+
+fn options() -> [OptionRow; 10] {
+    let behavior = t!("Панель", "Behavior");
+    let icons = t!("Значки", "Icons");
+    [
+        (
+            t!("Автоматически скрывать панель", "Auto-hide taskbar"),
+            behavior,
+            |p| &mut p.auto_hide,
+        ),
+        (
+            t!("Скрывать в полноэкранном режиме", "Hide in fullscreen"),
+            behavior,
+            |p| &mut p.hide_fullscreen,
+        ),
+        (
+            t!("Использовать весь дополнительный экран", "Use full secondary display"),
+            behavior,
+            |p| &mut p.expand_secondary,
+        ),
+        (
+            t!("Открывать миниатюры по щелчку", "Click to open previews"),
+            behavior,
+            |p| &mut p.click_previews,
+        ),
+        (
+            t!("Перемешивать при загрузке Windows", "Shuffle at Windows startup"),
+            icons,
+            |p| &mut p.shuffle,
+        ),
+        (t!("Скрывать поиск", "Hide Search"), icons, |p| {
+            &mut p.hide_search
+        }),
+        (t!("Скрывать Пуск", "Hide Start"), icons, |p| &mut p.hide_start),
+        (
+            t!("Сдвигать значки на 35 пикселей", "Drift icons up to 35 px"),
+            "OLED",
+            |p| &mut p.drift,
+        ),
+        (
+            t!("Область уведомлений при наведении", "Reveal tray on hover"),
+            "OLED",
+            |p| &mut p.hover_tray,
+        ),
+        (
+            t!("Шестерёнка при наведении", "Reveal gear on hover"),
+            "OLED",
+            |p| &mut p.hover_gear,
+        ),
+    ]
+}
+
+unsafe fn setup_table(list: HWND, columns: &[(&str, i32)], checks: bool) {
+    let styles = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | if checks { LVS_EX_CHECKBOXES } else { 0 };
+    SendMessageW(list, LVM_SETEXTENDEDLISTVIEWSTYLE, 0, styles as isize);
+    let mut bounds: RECT = zeroed();
+    GetClientRect(list, &mut bounds);
+    let width = (bounds.right - GetSystemMetrics(SM_CXVSCROLL) - 2).max(1);
+    for (i, &(name, percent)) in columns.iter().enumerate() {
+        let mut text = wide(name);
+        let col = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH,
+            pszText: text.as_mut_ptr(),
+            cx: width * percent / 100,
+            ..zeroed()
+        };
+        SendMessageW(list, LVM_INSERTCOLUMNW, i, &col as *const _ as isize);
     }
+}
+
+unsafe fn insert_row(list: HWND, row: usize, columns: &[&str]) {
+    for (i, value) in columns.iter().enumerate() {
+        let mut text = wide(value);
+        let item = LVITEMW {
+            mask: LVIF_TEXT,
+            iItem: row as i32,
+            iSubItem: i as i32,
+            pszText: text.as_mut_ptr(),
+            ..zeroed()
+        };
+        let msg = if i == 0 { LVM_INSERTITEMW } else { LVM_SETITEMTEXTW };
+        SendMessageW(list, msg, row, &item as *const _ as isize);
+    }
+}
+
+unsafe fn update_displays(dlg: HWND) {
+    let rows = displays::rows();
+    if DISPLAY_ROWS.with_borrow(|old| *old == rows) {
+        return;
+    }
+    let list = GetDlgItem(dlg, DISPLAYS);
+    SendMessageW(list, WM_SETREDRAW, 0, 0);
+    SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
+    for (i, row) in rows.iter().enumerate() {
+        insert_row(list, i, &row.each_ref().map(String::as_str));
+    }
+    SendMessageW(list, WM_SETREDRAW, 1, 0);
+    InvalidateRect(list, null(), 1);
+    DISPLAY_ROWS.replace(rows);
 }
 
 unsafe fn sync_controls(dlg: HWND) {
-    let prefs = preferences();
+    SYNCING.set(true);
+    let mut prefs = preferences();
     let style_index = i18n::style::ALL.iter().position(|s| *s == style()).unwrap_or(0);
     SendDlgItemMessageW(dlg, STYLE, CB_SETCURSEL, style_index, 0);
     SendDlgItemMessageW(dlg, HEIGHT, CB_SETCURSEL, prefs.height_index, 0);
-    for (id, checked) in [
-        (FULL, prefs.hide_fullscreen),
-        (SECONDARY, prefs.expand_secondary),
-        (CLICK_PREVIEWS, prefs.click_previews),
-        (DRIFT, prefs.drift),
-        (SHUFFLE, prefs.shuffle),
-        (HIDE_SEARCH, prefs.hide_search),
-        (HIDE_START, prefs.hide_start),
-        (HOVER_TRAY, prefs.hover_tray),
-        (HOVER_GEAR, prefs.hover_gear),
-    ] {
-        CheckDlgButton(dlg, id, if checked { BST_CHECKED } else { BST_UNCHECKED });
+    for (i, (_, _, field)) in options().iter().enumerate() {
+        let state = if *field(&mut prefs) { 2 } else { 1 };
+        let item = LVITEMW {
+            stateMask: LVIS_STATEIMAGEMASK,
+            state: state << 12,
+            ..zeroed()
+        };
+        SendDlgItemMessageW(dlg, OPTIONS, LVM_SETITEMSTATE, i, &item as *const _ as isize);
     }
+    SYNCING.set(false);
 }
 
-unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM) -> isize {
+unsafe fn apply(dlg: HWND, prefs: Preferences) {
+    if let Err(err) = prefs.save() {
+        sync_controls(dlg);
+        MessageBoxW(
+            dlg,
+            wide(&err.to_string()).as_ptr(),
+            wide(t!("Не удалось сохранить настройки", "Could not save settings")).as_ptr(),
+            MB_ICONERROR,
+        );
+        return;
+    }
+    let bar = BAR.load(Relaxed) as HWND;
+    if !prefs.expand_secondary {
+        displays::restore();
+    }
+    previews::hide();
+    HOT.set(NONE);
+    refresh_buttons();
+    place(bar);
+    displays::reconcile(&displays::secondary_trays());
+    fs_update(bar);
+    update_displays(dlg);
+}
+
+unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> isize {
     match msg {
         WM_INITDIALOG => {
             DIALOG.set(dlg);
-            DISPLAY_TEXT.take();
+            DISPLAY_ROWS.take();
             if !i18n::english() {
                 SetWindowTextW(dlg, wide("Настройки WinRust").as_ptr());
                 for (id, text) in [
-                    (1000, "Оформление"),
                     (1001, "Стиль"),
                     (1002, "Высота панели"),
-                    (1003, "Поведение окон"),
-                    (FULL, "Скрывать панель в полноэкранных приложениях"),
-                    (SECONDARY, "Использовать всё место на экранах без панели WinRust"),
+                    (1003, "Настройки панели"),
                     (1004, "Подключённые экраны"),
-                    (CLICK_PREVIEWS, "Открывать миниатюры по щелчку"),
-                    (DRIFT, "Сдвигать значки на 35 пикселей влево и вправо"),
-                    (SHUFFLE, "Перемешивать значки при загрузке Windows"),
-                    (HIDE_SEARCH, "Скрыть значок поиска"),
-                    (HIDE_START, "Скрыть значок Пуска"),
-                    (HOVER_TRAY, "Показывать область уведомлений при наведении"),
-                    (HOVER_GEAR, "Показывать шестерёнку при наведении"),
-                    (1005, "Значки"),
-                    (1006, "Защита OLED"),
                     (TILE, "Разложить окна"),
                     (IDOK, "Закрыть"),
                 ] {
@@ -179,11 +279,45 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
             for h in HEIGHTS {
                 SendDlgItemMessageW(dlg, HEIGHT, CB_ADDSTRING, 0, wide(&format!("{h} px")).as_ptr() as isize);
             }
+            let list = GetDlgItem(dlg, OPTIONS);
+            setup_table(list, &[(t!("Настройка", "Option"), 72), (t!("Группа", "Group"), 28)], true);
+            SYNCING.set(true);
+            for (i, (label, group, _)) in options().iter().enumerate() {
+                insert_row(list, i, &[label, group]);
+            }
             sync_controls(dlg);
-            display_text(dlg);
+            setup_table(
+                GetDlgItem(dlg, DISPLAYS),
+                &[
+                    (t!("Экран", "Display"), 23),
+                    (t!("Назначение", "Role"), 24),
+                    (t!("Разрешение", "Resolution"), 26),
+                    (t!("Рабочая область", "Usable area"), 27),
+                ],
+                false,
+            );
+            update_displays(dlg);
             SetTimer(dlg, 1, 1000, None);
         }
-        WM_TIMER => display_text(dlg),
+        WM_TIMER => update_displays(dlg),
+        WM_NOTIFY => {
+            let hdr = &*(lp as *const NMHDR);
+            if hdr.idFrom != OPTIONS as usize || hdr.code != LVN_ITEMCHANGED || SYNCING.get() {
+                return 0;
+            }
+            let change = &*(lp as *const NMLISTVIEW);
+            let old = (change.uOldState & LVIS_STATEIMAGEMASK) >> 12;
+            let new = (change.uNewState & LVIS_STATEIMAGEMASK) >> 12;
+            if old == new || old == 0 || !(1..=2).contains(&new) {
+                return 0;
+            }
+            if let Some((_, _, field)) = options().get(change.iItem as usize) {
+                let mut prefs = preferences();
+                *field(&mut prefs) = new == 2;
+                apply(dlg, prefs);
+            }
+            return 0;
+        }
         WM_COMMAND => {
             let id = (wp & 0xffff) as i32;
             let notification = (wp >> 16) as u32;
@@ -196,43 +330,16 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
                         place(bar);
                     }
                 }
-                HEIGHT | FULL | SECONDARY | CLICK_PREVIEWS..=HOVER_GEAR
-                    if (id == HEIGHT && notification == CBN_SELCHANGE) || (id != HEIGHT && notification == BN_CLICKED) =>
-                {
+                HEIGHT if notification == CBN_SELCHANGE => {
                     let index = SendDlgItemMessageW(dlg, HEIGHT, CB_GETCURSEL, 0, 0) as usize;
-                    if index >= HEIGHTS.len() {
-                        return 1;
-                    }
-                    let prefs = Preferences {
-                        click_previews: IsDlgButtonChecked(dlg, CLICK_PREVIEWS) == BST_CHECKED,
-                        drift: IsDlgButtonChecked(dlg, DRIFT) == BST_CHECKED,
-                        shuffle: IsDlgButtonChecked(dlg, SHUFFLE) == BST_CHECKED,
-                        hide_search: IsDlgButtonChecked(dlg, HIDE_SEARCH) == BST_CHECKED,
-                        hide_start: IsDlgButtonChecked(dlg, HIDE_START) == BST_CHECKED,
-                        hover_tray: IsDlgButtonChecked(dlg, HOVER_TRAY) == BST_CHECKED,
-                        hover_gear: IsDlgButtonChecked(dlg, HOVER_GEAR) == BST_CHECKED,
-                        height_index: index,
-                        hide_fullscreen: IsDlgButtonChecked(dlg, FULL) == BST_CHECKED,
-                        expand_secondary: IsDlgButtonChecked(dlg, SECONDARY) == BST_CHECKED,
-                    };
-                    if let Err(err) = prefs.save() {
-                        sync_controls(dlg);
-                        MessageBoxW(
+                    if index < HEIGHTS.len() {
+                        apply(
                             dlg,
-                            wide(&err.to_string()).as_ptr(),
-                            wide(t!("Не удалось сохранить настройки", "Could not save settings")).as_ptr(),
-                            MB_ICONERROR,
+                            Preferences {
+                                height_index: index,
+                                ..preferences()
+                            },
                         );
-                    } else {
-                        if !prefs.expand_secondary {
-                            displays::restore();
-                        }
-                        previews::hide();
-                        HOT.set(NONE);
-                        refresh_buttons();
-                        place(bar);
-                        displays::reconcile(&displays::secondary_trays());
-                        fs_update(bar);
                     }
                 }
                 TILE => {
@@ -260,6 +367,10 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, _: LPARAM
 pub(super) unsafe fn open() {
     let mut dlg = DIALOG.get();
     if dlg.is_null() {
+        InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_LISTVIEW_CLASSES,
+        });
         dlg = CreateDialogParamW(GetModuleHandleW(null()), 101usize as _, null_mut(), Some(dialog_proc), 0);
         if dlg.is_null() {
             let err = std::io::Error::last_os_error();

@@ -120,7 +120,7 @@ pub(super) unsafe fn restore() {
     }
 }
 
-pub(super) unsafe fn summary() -> String {
+pub(super) unsafe fn rows() -> Vec<[String; 4]> {
     unsafe extern "system" fn monitor(h: HMONITOR, _: HDC, _: *mut RECT, data: LPARAM) -> i32 {
         let mut info: MONITORINFOEXW = zeroed();
         info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
@@ -137,20 +137,18 @@ pub(super) unsafe fn summary() -> String {
             } else {
                 t!("Дополнительный", "Secondary")
             };
-            let area = t!("рабочая область", "usable");
-            (*(data as *mut Vec<String>)).push(format!(
-                "{label}   ·   {role}   ·   {} × {}   ·   {} × {} {area}",
-                screen.right - screen.left,
-                screen.bottom - screen.top,
-                work.right - work.left,
-                work.bottom - work.top
-            ));
+            (*(data as *mut Vec<[String; 4]>)).push([
+                label.to_owned(),
+                role.to_owned(),
+                format!("{} × {}", screen.right - screen.left, screen.bottom - screen.top),
+                format!("{} × {}", work.right - work.left, work.bottom - work.top),
+            ]);
         }
         1
     }
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines: Vec<[String; 4]> = Vec::new();
     EnumDisplayMonitors(null_mut(), null(), Some(monitor), &mut lines as *mut _ as _);
-    lines.join("\r\n")
+    lines
 }
 
 #[cfg(test)]

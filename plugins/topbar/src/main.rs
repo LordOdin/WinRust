@@ -199,6 +199,8 @@ thread_local! {
     static ORDER: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) }; // unpinned windows in the order their buttons were added
     static HV: RefCell<HashMap<i32, (f32, u64)>> = RefCell::new(HashMap::new()); // hover fade per element: (0..1, last update ms)
     static BUSY: Cell<bool> = const { Cell::new(false) }; // a fade is still running: the painter asks for another frame
+    static AUTO_HIDDEN: Cell<bool> = const { Cell::new(false) };
+    static OUTSIDE_SINCE: Cell<Option<u64>> = const { Cell::new(None) };
     static BAR_P: Cell<f32> = const { Cell::new(0.0) }; // bar slide: 0 = off screen, 1 = in place
     static BAR_T: Cell<u64> = const { Cell::new(0) };
     static SCALE: Cell<f32> = const { Cell::new(1.0) };
@@ -758,7 +760,7 @@ unsafe fn place(hwnd: HWND) {
     ab.cbSize = size_of::<APPBARDATA>() as u32;
     ab.hWnd = hwnd;
     // the reserved strip: the bar itself plus the dock's gap under it
-    let strip = bar_h() + dock_gap();
+    let strip = if settings::preferences().auto_hide { 0 } else { bar_h() + dock_gap() };
     if MANUAL_STRIP.get().is_some_and(|(top, _, end)| top != at_top() || end != if top { strip } else { cy - strip }) {
         release_manual_strip();
     }
@@ -784,6 +786,7 @@ unsafe fn place(hwnd: HWND) {
 
 /// Some shells accept the appbar request but leave maximized windows the full monitor.
 unsafe fn reserve_work_area() {
+    if settings::preferences().auto_hide { return; }
     let mut area: RECT = zeroed();
     if SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut area as *mut _ as *mut _, 0) == 0 {
         return;
@@ -1516,7 +1519,7 @@ unsafe fn bar_anim(hwnd: HWND) {
 }
 
 unsafe fn bar_step(hwnd: HWND) {
-    let target = if FULLSCREEN.load(Relaxed) { 0.0 } else { 1.0 }; // hides only for a fullscreen game or video: not over the desktop, not in any style
+    let target = if FULLSCREEN.load(Relaxed) || AUTO_HIDDEN.get() { 0.0 } else { 1.0 };
     let now = now_ms();
     let dt = now.saturating_sub(BAR_T.replace(now)).min(50) as f32;
     let p = BAR_P.get();
@@ -1541,6 +1544,8 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     if fg.is_null() || fg == bar || IsWindowVisible(fg) == 0 || IsIconic(fg) != 0 {
         return false;
     }
+    // Auto-hide gives a maximized window the entire work area, including its resize frame.
+    if IsZoomed(fg) != 0 && GetWindowLongW(fg, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION { return false; }
     let mut cls = [0u16; 64];
     let n = GetClassNameW(fg, cls.as_mut_ptr(), 64).max(0) as usize;
     if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "RustExplorer") {
@@ -1560,14 +1565,42 @@ unsafe fn fullscreen_now(bar: HWND) -> bool {
     (m.left, m.top) == (0, 0) && origin.x <= m.left && origin.y <= m.top && origin.x + r.right >= m.right && origin.y + r.bottom >= m.bottom
 }
 
+/// Auto-hide overlays the desktop. Only the bar's own edge on the primary monitor can reveal it.
+unsafe fn idle_hide(hwnd: HWND) -> bool {
+    if !settings::preferences().auto_hide {
+        OUTSIDE_SINCE.set(None);
+        return false;
+    }
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    let (x, width) = bar_x_w();
+    let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let edge = if at_top() { (0..2).contains(&pt.y) } else { (screen_h-2..screen_h).contains(&pt.y) };
+    let at_edge = (x..x+width).contains(&pt.x) && edge;
+    let engaged = at_edge || WindowFromPoint(pt) == hwnd || icon_order::pending() ||
+        previews::visible() || fly::any_open() || IsWindowVisible(TRAYFLY.get()) != 0 || GetCapture() == hwnd;
+    if engaged {
+        OUTSIDE_SINCE.set(None);
+        return false;
+    }
+    let now = GetTickCount64();
+    let since = OUTSIDE_SINCE.get().unwrap_or(now);
+    OUTSIDE_SINCE.set(Some(since));
+    now.saturating_sub(since) >= 750
+}
+
 unsafe fn fs_update(hwnd: HWND) {
     let fs = settings::preferences().hide_fullscreen && fullscreen_now(hwnd);
-    if FULLSCREEN.swap(fs, Relaxed) != fs {
-        if fs {
-            fly::close_now();
-            previews::hide();
-            hide_tip(hwnd);
-        }
+    let previous_fs = FULLSCREEN.swap(fs, Relaxed);
+    if fs && !previous_fs {
+        fly::close_now();
+        previews::hide();
+        hide_tip(hwnd);
+    }
+    let idle = idle_hide(hwnd);
+    let previous_idle = AUTO_HIDDEN.replace(idle);
+    if (fs || idle) != (previous_fs || previous_idle) {
+        if idle { hide_tip(hwnd); }
         bar_anim(hwnd);
     }
 }

@@ -11,6 +11,8 @@ const OPTIONS: i32 = 123;
 const TAB: i32 = 124;
 const TIMES: i32 = 125;
 const HINT: i32 = 126;
+const EDIT_TIME: u32 = WM_APP + 1;
+const TIME_VALUE: i32 = 141;
 const KEY: &str = r"Software\WinRust\Topbar";
 const VALUE: &str = "LayoutV1";
 
@@ -354,72 +356,79 @@ unsafe fn show_page(dlg: HWND, page: isize) {
     SetDlgItemTextW(dlg, HINT, wide(hint).as_ptr());
 }
 
-unsafe fn edit_time(dlg: HWND, row: i32) {
-    if row < 0 || row as usize >= timing::ALL.len() {
-        return;
+// Open the editor after the list has finished dispatching its notification.
+unsafe fn request_time_edit(dlg: HWND, row: i32) {
+    if row >= 0 && (row as usize) < timing::ALL.len() {
+        PostMessageW(dlg, EDIT_TIME, row as usize, 0);
     }
-    let list = GetDlgItem(dlg, TIMES);
-    SetFocus(list);
-    SendMessageW(list, LVM_ENSUREVISIBLE, row as usize, 0);
-    PostMessageW(list, LVM_EDITLABELW, row as usize, 0);
 }
 
-unsafe fn time_notification(dlg: HWND, hdr: &NMHDR, lp: LPARAM) -> isize {
-    match hdr.code {
-        NM_DBLCLK => {
-            let row = (*(lp as *const NMITEMACTIVATE)).iItem;
-            edit_time(dlg, row);
+unsafe extern "system" fn time_editor(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> isize {
+    match msg {
+        WM_INITDIALOG => {
+            let Some(&t) = timing::ALL.get(lp as usize) else { return 0 };
+            SetWindowLongPtrW(dlg, GWLP_USERDATA, lp);
+            SetWindowTextW(dlg, wide(t!("Изменить время", "Edit time")).as_ptr());
+            SetDlgItemTextW(dlg, 140, wide(t.label()).as_ptr());
+            SetDlgItemTextW(dlg, 142, wide(t.unit()).as_ptr());
+            SetDlgItemTextW(dlg, IDOK, wide(t!("Сохранить", "Save")).as_ptr());
+            SetDlgItemTextW(dlg, IDCANCEL, wide(t!("Отмена", "Cancel")).as_ptr());
+            SendDlgItemMessageW(dlg, TIME_VALUE, EM_SETLIMITTEXT, 31, 0);
+            SetDlgItemInt(dlg, TIME_VALUE, t.value(), 0);
+            SetFocus(GetDlgItem(dlg, TIME_VALUE));
+            SendDlgItemMessageW(dlg, TIME_VALUE, EM_SETSEL, 0, -1);
+            return 0;
         }
-        LVN_KEYDOWN => {
-            if (*(lp as *const NMLVKEYDOWN)).wVKey == VK_F2 {
-                let row = SendMessageW(hdr.hwndFrom, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as _) as i32;
-                edit_time(dlg, row);
-            }
-        }
-        LVN_ENDLABELEDITW => {
-            let item = &(*(lp as *const NMLVDISPINFOW)).item;
-            let Some(t) = timing::ALL.get(item.iItem as usize).copied() else {
-                return 0;
-            };
-            if item.pszText.is_null() {
-                return 0;
-            }
-            let len = windows_sys::Win32::Globalization::lstrlenW(item.pszText) as usize;
-            let raw = String::from_utf16_lossy(std::slice::from_raw_parts(item.pszText, len));
-            let value = raw.trim().parse::<u32>().ok().filter(|v| (1..=t.maximum()).contains(v));
-            let Some(value) = value else {
-                SetDlgItemTextW(
-                    dlg,
-                    HINT,
-                    wide(&format!("{}: 1 – {} {}", t.label(), t.maximum(), t.unit())).as_ptr(),
-                );
-                return 0;
-            };
-            if let Err(err) = t.save(value) {
-                SetDlgItemTextW(dlg, HINT, wide(&err.to_string()).as_ptr());
-                return 0;
-            }
-            if t == Timing::Shuffle {
-                icon_order::schedule(BAR.load(Relaxed) as HWND);
-            }
-            for (i, (_, _, _, time)) in options().iter().enumerate() {
-                if *time == Some(t) {
-                    let mut value = wide(&t.display());
-                    let sub = LVITEMW {
-                        iSubItem: 2,
-                        pszText: value.as_mut_ptr(),
-                        ..zeroed()
-                    };
-                    SendDlgItemMessageW(dlg, OPTIONS, LVM_SETITEMTEXTW, i, &sub as *const _ as _);
+        WM_COMMAND => match (wp & 0xffff) as i32 {
+            IDOK => {
+                let row = GetWindowLongPtrW(dlg, GWLP_USERDATA) as usize;
+                let Some(&t) = timing::ALL.get(row) else { return 0 };
+                let mut buffer = [0u16; 32];
+                let len = GetDlgItemTextW(dlg, TIME_VALUE, buffer.as_mut_ptr(), buffer.len() as i32);
+                let value = String::from_utf16_lossy(&buffer[..len as usize]).trim().parse::<u32>();
+                let error = match value {
+                    Ok(v) if (1..=t.maximum()).contains(&v) => t.save(v).err().map(|e| e.to_string()),
+                    _ => Some(format!("1 – {} {}", t.maximum(), t.unit())),
+                };
+                if let Some(error) = error {
+                    SetDlgItemTextW(dlg, 143, wide(&error).as_ptr());
+                    SetFocus(GetDlgItem(dlg, TIME_VALUE));
+                } else {
+                    EndDialog(dlg, IDOK as isize);
                 }
             }
-            SetDlgItemTextW(dlg, HINT, wide(t!("Сохранено.", "Saved.")).as_ptr());
-            SetWindowLongPtrW(dlg, DWLP_MSGRESULT as i32, 1);
-            return 1;
-        }
-        _ => {}
+            IDCANCEL => { EndDialog(dlg, IDCANCEL as isize); }
+            _ => return 0,
+        },
+        WM_CLOSE => { EndDialog(dlg, IDCANCEL as isize); }
+        _ => return 0,
     }
-    0
+    1
+}
+
+unsafe fn set_cell(list: HWND, row: usize, column: i32, text: &str) {
+    let mut value = wide(text);
+    let item = LVITEMW { iSubItem: column, pszText: value.as_mut_ptr(), ..zeroed() };
+    SendMessageW(list, LVM_SETITEMTEXTW, row, &item as *const _ as _);
+}
+
+unsafe fn edit_time(dlg: HWND, row: usize) {
+    let Some(&t) = timing::ALL.get(row) else { return };
+    if IsWindowEnabled(dlg) == 0 { return; }
+    let result = DialogBoxParamW(GetModuleHandleW(null()), 102usize as _, dlg, Some(time_editor), row as isize);
+    if result == -1 {
+        SetDlgItemTextW(dlg, HINT, wide(&std::io::Error::last_os_error().to_string()).as_ptr());
+        return;
+    }
+    if result != IDOK as isize { return; }
+    if t == Timing::Shuffle {
+        icon_order::schedule(BAR.load(Relaxed) as HWND);
+    }
+    set_cell(GetDlgItem(dlg, TIMES), row, 0, &t.value().to_string());
+    for (i, option) in options().iter().enumerate() {
+        if option.3 == Some(t) { set_cell(GetDlgItem(dlg, OPTIONS), i, 2, &t.display()); }
+    }
+    SetDlgItemTextW(dlg, HINT, wide(t!("Сохранено.", "Saved.")).as_ptr());
 }
 
 unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> isize {
@@ -526,6 +535,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
             SetTimer(dlg, 1, 1000, None);
         }
         WM_TIMER => update_displays(dlg),
+        EDIT_TIME => edit_time(dlg, wp),
         WM_NOTIFY => {
             let hdr = &*(lp as *const NMHDR);
             if hdr.idFrom == TAB as usize && hdr.code == TCN_SELCHANGE {
@@ -541,7 +551,15 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 return 0;
             }
             if hdr.idFrom == TIMES as usize {
-                return time_notification(dlg, hdr, lp);
+                match hdr.code {
+                    NM_DBLCLK => request_time_edit(dlg, (*(lp as *const NMITEMACTIVATE)).iItem),
+                    LVN_KEYDOWN if (*(lp as *const NMLVKEYDOWN)).wVKey == VK_F2 => {
+                        let row = SendMessageW(hdr.hwndFrom, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as _) as i32;
+                        request_time_edit(dlg, row);
+                    }
+                    _ => {}
+                }
+                return 0;
             }
             if hdr.idFrom == OPTIONS as usize && hdr.code == NM_DBLCLK {
                 let cell = &*(lp as *const NMITEMACTIVATE);
@@ -549,7 +567,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                     if let Some(t) = options().get(cell.iItem as usize).and_then(|opt| opt.3) {
                         SendDlgItemMessageW(dlg, TAB, TCM_SETCURSEL, 1, 0);
                         show_page(dlg, 1);
-                        edit_time(dlg, t as i32);
+                        request_time_edit(dlg, t as i32);
                     }
                 }
                 return 0;
@@ -662,13 +680,6 @@ pub(super) unsafe fn open() {
 pub(super) unsafe fn handles(msg: &MSG) -> bool {
     let dlg = DIALOG.get();
     if dlg.is_null() {
-        return false;
-    }
-    // The list view edit control owns Enter and Escape while a value is being edited.
-    if msg.message == WM_KEYDOWN
-        && matches!(msg.wParam as u16, VK_RETURN | VK_ESCAPE)
-        && msg.hwnd as isize == SendDlgItemMessageW(dlg, TIMES, LVM_GETEDITCONTROL, 0, 0)
-    {
         return false;
     }
     IsDialogMessageW(dlg, msg) != 0

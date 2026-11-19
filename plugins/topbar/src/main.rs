@@ -2411,6 +2411,9 @@ unsafe fn click_app(button: i32, dismissed_preview: bool) {
             }));
             if let Some(path) = path { open(&path); }
         }
+        [window] if GetForegroundWindow() == *window && IsIconic(*window) == 0 => {
+            ShowWindowAsync(*window, SW_MINIMIZE);
+        }
         [window] => activate_window(*window),
         _ if !dismissed_preview => { previews::show(button); }
         _ => {}
@@ -2533,6 +2536,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         return 0;
     }
     match msg {
+        WM_MOUSEACTIVATE => return MA_NOACTIVATE as isize,
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,
         WM_TIMER if wp == 2 => {

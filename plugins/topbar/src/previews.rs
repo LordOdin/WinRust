@@ -1,5 +1,9 @@
 use super::*;
 use windows_sys::Win32::Graphics::Dwm::*;
+use windows_sys::Win32::UI::Controls::{
+    CloseThemeData, DrawThemeBackground, GetThemeColor, OpenThemeData, FBS_NORMAL, FLS_NORMAL,
+    FLYOUT_BODY, FLYOUT_LABEL, TMT_TEXTCOLOR,
+};
 
 const NAME: &str = "WinRustWindowPreviews";
 
@@ -336,7 +340,18 @@ unsafe fn paint(hwnd: HWND) {
     let buffered = !buffer.is_null() && !bitmap.is_null();
     let dc = if buffered { buffer } else { target };
     let old_bitmap = if buffered { SelectObject(dc, bitmap) } else { null_mut() };
-    fill(dc, r, pal().bg, 0);
+    FillRect(dc, &r, GetSysColorBrush(COLOR_MENU));
+    let mut ink = GetSysColor(COLOR_MENUTEXT);
+    let theme = OpenThemeData(hwnd, wide("Flyout").as_ptr());
+    if theme != 0 {
+        if DrawThemeBackground(theme, dc, FLYOUT_BODY, FBS_NORMAL, &r, null()) >= 0 {
+            let mut color = ink;
+            if GetThemeColor(theme, FLYOUT_LABEL, FLS_NORMAL, TMT_TEXTCOLOR as i32, &mut color) >= 0 {
+                ink = color;
+            }
+        }
+        CloseThemeData(theme);
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let font = tip_font();
     let old = SelectObject(dc, font);
@@ -344,16 +359,9 @@ unsafe fn paint(hwnd: HWND) {
         let Some(g) = state else { return };
         for card in &g.cards {
             let b = card.bounds;
-            fill(
-                dc,
-                b,
-                if HOVERED.get() == card.window {
-                    pal().hover
-                } else {
-                    pal().active
-                },
-                rr(6),
-            );
+            if HOVERED.get() == card.window {
+                FrameRect(dc, &b, GetSysColorBrush(COLOR_HIGHLIGHT));
+            }
             let icon = sc(16);
             if !card.icon.is_null() {
                 DrawIconEx(
@@ -377,7 +385,7 @@ unsafe fn paint(hwnd: HWND) {
                     top: b.top,
                     bottom: b.top + sc(30),
                 },
-                pal().text,
+                ink,
                 DT_LEFT,
             );
             if card.size.cx == 0 && !card.icon.is_null() {
@@ -401,10 +409,10 @@ unsafe fn paint(hwnd: HWND) {
                 dc,
                 &format!("{} / {}", g.page + 1, g.windows.len().div_ceil(g.capacity)),
                 RECT { top, ..r },
-                pal().text,
+                ink,
                 DT_CENTER,
             );
-            text(dc, "‹", RECT { left: sc(12), top, ..r }, pal().text, DT_LEFT);
+            text(dc, "‹", RECT { left: sc(12), top, ..r }, ink, DT_LEFT);
             text(
                 dc,
                 "›",
@@ -413,7 +421,7 @@ unsafe fn paint(hwnd: HWND) {
                     top,
                     ..r
                 },
-                pal().text,
+                ink,
                 DT_RIGHT,
             );
         }
@@ -435,6 +443,7 @@ unsafe fn paint(hwnd: HWND) {
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_THEMECHANGED | WM_SYSCOLORCHANGE => { InvalidateRect(hwnd, null(), 0); }
         WM_MOUSEACTIVATE => return MA_NOACTIVATE as isize,
         WM_PAINT => paint(hwnd),
         WM_ERASEBKGND => return 1,

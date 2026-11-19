@@ -1969,14 +1969,25 @@ unsafe fn paint(hwnd: HWND) {
             let key = b.pin.map(|p| -(p as isize) - 1).or_else(|| b.wins.first().map(|&w| w as isize)).unwrap_or(0);
             // squeezes on click, grows in when new, lifts a pixel on hover
             let isz = (icon_px().min(l.bw - sc(6)).min(bw - sc(6)) as f32 * (1.0 - 0.18 * tp) * (0.55 + 0.45 * appear(key))) as i32;
-            if !ic.is_null() {
-                DrawIconEx(dc, x + (bw - isz) / 2, mid - isz / 2 - sc(2) - (sc(1) as f32 * th) as i32, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+            let minimized = !b.wins.is_empty() && b.wins.iter().all(|&w| IsIconic(w) != 0);
+            let indicator_y = bot - sc(4);
+            if !ic.is_null() && isz > 0 {
+                let icon_x = x + (bw - isz) / 2;
+                let saved = if minimized { SaveDC(dc) } else { 0 };
+                let icon_y = if saved != 0 {
+                    // Sink the icon behind its running indicator while keeping the whole button clickable.
+                    IntersectClipRect(dc, r.left, r.top, r.right, indicator_y);
+                    indicator_y - (isz + 1) / 2
+                } else {
+                    mid - isz / 2 - sc(2) - (sc(1) as f32 * th) as i32
+                };
+                DrawIconEx(dc, icon_x, icon_y, ic, isz, isz, 0, null_mut(), DI_NORMAL);
+                if saved != 0 { RestoreDC(dc, saved); }
             }
             if !b.wins.is_empty() {
-                let min = b.wins.iter().all(|&w| IsIconic(w) != 0);
                 let pw = sc(6) + (sc(12) as f32 * ta) as i32; // the running-app pill stretches when its window is active
-                let py = bot - sc(4);
-                let col = if act { pal().accent } else if min { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
+                let py = indicator_y;
+                let col = if act { pal().accent } else if minimized { mix(pal().dim, pal().bg, 0.45) } else { pal().dim };
                 fill(dc, RECT { left: x + (bw - pw) / 2, top: py, right: x + (bw + pw) / 2, bottom: py + sc(3) }, col, sc(3));
                 if b.wins.len() > 1 {
                     // a second, shorter pill: more than one window behind this button

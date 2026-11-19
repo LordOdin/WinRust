@@ -840,6 +840,18 @@ mod desk {
     // "WorkerW" that appears: Windows 11 24H2 has it as a child of Progman, under the icons. Ours is the same, and while it
     // holds a wallpaper the icon list turns see-through (colour key) so the wallpaper shows between the icons.
 
+    pub unsafe fn virtual_bounds() -> (i32, i32, i32, i32) {
+        (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+         GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN))
+    }
+
+    pub unsafe fn resize_worker(width: i32, height: i32) {
+        let worker = WORKERW.get() as HWND;
+        if !worker.is_null() && IsWindow(worker) != 0 {
+            SetWindowPos(worker, HWND_BOTTOM, 0, 0, width, height, SWP_NOACTIVATE);
+        }
+    }
+
     pub unsafe fn spawn_workerw(h: HWND) {
         if WORKERW.get() != 0 && IsWindow(WORKERW.get() as HWND) != 0 { return; }
         let mut r: RECT = std::mem::zeroed();
@@ -988,6 +1000,7 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
                 let list = ST.with_borrow(|st| st.list);
                 let (cw, ch) = ((lp & 0xFFFF) as i32, ((lp >> 16) & 0xFFFF) as i32);
                 if desk() {
+                    desk::resize_worker(cw, ch);
                     desktop_menu::layout_icons(list);
                 } else {
                     ui::layout_children(cw, ch);
@@ -1020,7 +1033,8 @@ unsafe extern "system" fn proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESU
             WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_DISPLAYCHANGE if desk() => {
                 use windows_sys::Win32::Graphics::Gdi::*;
                 if m==WM_DISPLAYCHANGE {
-                    SetWindowPos(h,HWND_BOTTOM,0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN),SWP_NOACTIVATE);
+                    let (x, y, width, height) = desk::virtual_bounds();
+                    SetWindowPos(h, HWND_BOTTOM, x, y, width, height, SWP_NOACTIVATE);
                 }
                 if (m==WM_SETTINGCHANGE && wp==SPI_SETWORKAREA as usize) || m==WM_DISPLAYCHANGE {
                     desktop_menu::layout_icons(ST.with_borrow(|st|st.list));
@@ -1239,7 +1253,8 @@ fn main() {
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst, lpszClassName: pm.as_ptr(), hCursor: LoadCursorW(0 as _, IDC_ARROW), hbrBackground: bg, ..std::mem::zeroed() });
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(desk::workerw_proc), hInstance: inst, lpszClassName: w("WorkerW").as_ptr(), ..std::mem::zeroed() });
             RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(DefWindowProcW), hInstance: inst, lpszClassName: w("SHELLDLL_DefView").as_ptr(), ..std::mem::zeroed() });
-            let d = CreateWindowExW(WS_EX_TOOLWINDOW, pm.as_ptr(), w("rs-desktop").as_ptr(), WS_POPUP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), 0 as _, 0 as _, inst, ptr::null());
+            let (x, y, width, height) = desk::virtual_bounds();
+            let d = CreateWindowExW(WS_EX_TOOLWINDOW, pm.as_ptr(), w("rs-desktop").as_ptr(), WS_POPUP, x, y, width, height, 0 as _, 0 as _, inst, ptr::null());
             // DWM must keep the desktop and its wallpaper visible behind the window being peeked.
             use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_EXCLUDED_FROM_PEEK};
             let enabled = 1i32;

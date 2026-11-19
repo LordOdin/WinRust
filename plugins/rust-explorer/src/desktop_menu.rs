@@ -69,15 +69,14 @@ pub(super) fn arrange() -> bool {
 pub(super) unsafe fn layout_icons(list: HWND) {
     let mut work: RECT = std::mem::zeroed();
     if !list.is_null() && SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut work as *mut _ as _, 0) != 0 {
-        let y = work.top + desk_top();
-        MoveWindow(
-            list,
-            work.left,
-            y,
-            (work.right - work.left).max(0),
-            (work.bottom - y).max(0),
-            1,
-        );
+        // Icon positions are relative to the primary work area, even when a monitor
+        // to the left or above it moves the wallpaper window's client origin.
+        let mut origin = POINT { x: work.left, y: work.top + desk_top() };
+        let width = work.right - work.left;
+        let height = work.bottom - origin.y;
+        if windows_sys::Win32::Graphics::Gdi::ScreenToClient(GetParent(list), &mut origin) != 0 {
+            MoveWindow(list, origin.x, origin.y, width.max(0), height.max(0), 1);
+        }
     }
 }
 

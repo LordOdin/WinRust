@@ -1,11 +1,8 @@
 use super::*;
 use windows_sys::Win32::Graphics::Dwm::*;
-use windows_sys::Win32::UI::Controls::{
-    CloseThemeData, DrawThemeBackground, GetThemeColor, OpenThemeData, FBS_NORMAL, FLS_NORMAL,
-    FLYOUT_BODY, FLYOUT_LABEL, TMT_TEXTCOLOR,
-};
 
 const NAME: &str = "WinRustWindowPreviews";
+const CARD_INSET: i32 = 5;
 
 // DWM's window Peek entry point on Windows 8.1 and later. Resolve it at runtime
 // because the compositor exports it by ordinal rather than in the public SDK.
@@ -147,10 +144,10 @@ impl Card {
         {
             let r = self.bounds;
             let area = RECT {
-                left: r.left + sc(7),
+                left: r.left + sc(CARD_INSET),
                 top: r.top + sc(31),
-                right: r.right - sc(7),
-                bottom: r.bottom - sc(7),
+                right: r.right - sc(CARD_INSET),
+                bottom: r.bottom - sc(CARD_INSET),
             };
             let props = DWM_THUMBNAIL_PROPERTIES {
                 dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY,
@@ -172,7 +169,7 @@ unsafe fn layout() {
     let (width, height, cx) = GROUP.with_borrow_mut(|state| {
         let g = state.as_mut().unwrap();
         let screen = GetSystemMetrics(SM_CXSCREEN) - if edge::vertical() {edge::thickness()+dock_gap()} else {0};
-        let pad = sc(6);
+        let pad = sc(4);
         let card_w = sc(208).min((screen - 4 * pad).max(sc(40)));
         let card_h = sc(150);
         g.capacity = ((screen - 3 * pad) / (card_w + pad)).max(1) as usize;
@@ -340,18 +337,7 @@ unsafe fn paint(hwnd: HWND) {
     let buffered = !buffer.is_null() && !bitmap.is_null();
     let dc = if buffered { buffer } else { target };
     let old_bitmap = if buffered { SelectObject(dc, bitmap) } else { null_mut() };
-    FillRect(dc, &r, GetSysColorBrush(COLOR_MENU));
-    let mut ink = GetSysColor(COLOR_MENUTEXT);
-    let theme = OpenThemeData(hwnd, wide("Flyout").as_ptr());
-    if theme != 0 {
-        if DrawThemeBackground(theme, dc, FLYOUT_BODY, FBS_NORMAL, &r, null()) >= 0 {
-            let mut color = ink;
-            if GetThemeColor(theme, FLYOUT_LABEL, FLS_NORMAL, TMT_TEXTCOLOR as i32, &mut color) >= 0 {
-                ink = color;
-            }
-        }
-        CloseThemeData(theme);
-    }
+    fill(dc, r, pal().bg, 0);
     SetBkMode(dc, TRANSPARENT as i32);
     let font = tip_font();
     let old = SelectObject(dc, font);
@@ -359,9 +345,16 @@ unsafe fn paint(hwnd: HWND) {
         let Some(g) = state else { return };
         for card in &g.cards {
             let b = card.bounds;
-            if HOVERED.get() == card.window {
-                FrameRect(dc, &b, GetSysColorBrush(COLOR_HIGHLIGHT));
-            }
+            fill(
+                dc,
+                b,
+                if HOVERED.get() == card.window {
+                    pal().hover
+                } else {
+                    pal().active
+                },
+                rr(6),
+            );
             let icon = sc(16);
             if !card.icon.is_null() {
                 DrawIconEx(
@@ -385,7 +378,7 @@ unsafe fn paint(hwnd: HWND) {
                     top: b.top,
                     bottom: b.top + sc(30),
                 },
-                ink,
+                pal().text,
                 DT_LEFT,
             );
             if card.size.cx == 0 && !card.icon.is_null() {
@@ -409,10 +402,10 @@ unsafe fn paint(hwnd: HWND) {
                 dc,
                 &format!("{} / {}", g.page + 1, g.windows.len().div_ceil(g.capacity)),
                 RECT { top, ..r },
-                ink,
+                pal().text,
                 DT_CENTER,
             );
-            text(dc, "‹", RECT { left: sc(12), top, ..r }, ink, DT_LEFT);
+            text(dc, "‹", RECT { left: sc(12), top, ..r }, pal().text, DT_LEFT);
             text(
                 dc,
                 "›",
@@ -421,7 +414,7 @@ unsafe fn paint(hwnd: HWND) {
                     top,
                     ..r
                 },
-                ink,
+                pal().text,
                 DT_RIGHT,
             );
         }

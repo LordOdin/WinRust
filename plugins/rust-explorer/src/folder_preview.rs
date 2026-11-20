@@ -15,7 +15,9 @@ use std::{
 use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::Registry::*,
-    UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus, VK_BACK, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_TAB},
+    UI::Input::KeyboardAndMouse::{
+        EnableWindow, GetAsyncKeyState, GetFocus, SetFocus, VK_BACK, VK_ESCAPE, VK_LBUTTON, VK_RBUTTON, VK_RETURN, VK_SHIFT, VK_TAB,
+    },
 };
 
 const DWELL: usize = 0x7241;
@@ -337,6 +339,10 @@ pub unsafe fn moved(list: HWND, index: isize) {
     if windows().is_some_and(|h| IsWindowVisible(h.popup) != 0) {
         return;
     }
+    if GetKeyState(VK_CONTROL as i32) >= 0 {
+        cancel(list);
+        return;
+    }
     let path = row_path(index);
     if windows().is_none() && (path.is_none() || create(list).is_none()) {
         return;
@@ -502,7 +508,7 @@ pub unsafe fn timer(list: HWND, id: usize) -> bool {
     }
     if id == DWELL {
         KillTimer(list, DWELL);
-        if !anchor {
+        if !anchor || GetAsyncKeyState(VK_CONTROL as i32) >= 0 {
             cancel(list);
             return true;
         }
@@ -750,6 +756,31 @@ unsafe fn paint_button(d: &DRAWITEMSTRUCT) {
 }
 
 pub unsafe fn key(msg: &MSG) -> bool {
+    if msg.wParam == VK_CONTROL as usize && matches!(msg.message, WM_KEYDOWN | WM_KEYUP) && !desk() {
+        // Ctrl can change while the pointer stays on the same folder.
+        if let Some(h) = windows()
+            && IsWindowVisible(h.popup) != 0
+        {
+            return false;
+        }
+        let list = ST.with_borrow(|st| st.list);
+        if !list.is_null() {
+            if msg.message == WM_KEYUP && GetKeyState(VK_CONTROL as i32) >= 0 {
+                cancel(list);
+            } else if msg.message == WM_KEYDOWN
+                && msg.lParam & (1 << 30) == 0
+                && GetForegroundWindow() == GetAncestor(list, GA_ROOT)
+                && GetKeyState(VK_LBUTTON as i32) >= 0
+                && GetKeyState(VK_RBUTTON as i32) >= 0
+            {
+                let mut pt: POINT = zeroed();
+                if GetCursorPos(&mut pt) != 0 {
+                    moved(list, hit(list, pt));
+                }
+            }
+        }
+        return false;
+    }
     if msg.message != WM_KEYDOWN {
         return false;
     }

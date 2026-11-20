@@ -55,11 +55,15 @@ pub(crate) fn install() -> Result<(), String> {
     })
 }
 
-pub(crate) fn uninstall() -> Result<(), String> {
+pub(crate) fn uninstall() -> Result<(), String> { search_release(false) }
+
+pub(crate) fn search_release(keep_files: bool) -> Result<(), String> {
     let _ = run("taskkill", &["/f", "/im", "rs-launcher.exe"]);
     let _ = run("reg", &["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "rs-launcher", "/f"]);
     // Windows Search back first: a failure removing our files below must not leave it switched off
-    let _ = run("reg", &["delete", SH_KEY, "/v", "Debugger", "/f"]);
+    if reg_str(SH_KEY, "Debugger").is_some_and(|v| v.eq_ignore_ascii_case("cmd.exe /c exit")) {
+        run("reg", &["delete", SH_KEY, "/v", "Debugger", "/f"])?;
+    }
     // no saved values (installed by an older launcher): the Windows defaults
     let mode = match (reg_dword(STATE, "WSearchStart"), reg_dword(STATE, "WSearchDelayed")) {
         (Some(2), Some(0)) => "auto",
@@ -72,6 +76,11 @@ pub(crate) fn uninstall() -> Result<(), String> {
         let _ = run("sc.exe", &["start", "WSearch"]);
     }
     let r = svc.and(taskbar_search(reg_dword(STATE, "SearchboxMode").unwrap_or(2)));
+    if keep_files {
+        // Stop only this installation's indexing tasks. Keep the disk indexes for resume.
+        r?;
+        return run("powershell", &["-NoProfile", "-Command", r#"$ErrorActionPreference='Stop'; Get-ScheduledTask -TaskPath '\' | Where-Object { $_.TaskName -match '^rs-search(-[A-Z])?$' -and $_.Actions.Execute -contains (Join-Path $env:ProgramFiles 'rs-search\rs.exe') } | ForEach-Object { Stop-ScheduledTask -InputObject $_; Unregister-ScheduledTask -InputObject $_ -Confirm:$false }"#]);
+    }
     if r.is_ok() {
         let _ = run("reg", &["delete", STATE, "/f"]);
     }

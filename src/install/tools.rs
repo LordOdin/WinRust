@@ -77,14 +77,16 @@ pub(crate) fn pv_install() -> Result<(), String> {
     r
 }
 
-pub(crate) fn pv_uninstall() -> Result<(), String> {
+pub(crate) fn pv_uninstall() -> Result<(), String> { pv_release(false) }
+
+pub(crate) fn pv_release(keep_files: bool) -> Result<(), String> {
     for e in PV_EXTS {
         let _ = run("reg", &["delete", &format!(r"HKLM\SOFTWARE\Classes\.{e}\OpenWithProgids"), "/v", PV_PROG, "/f"]);
     }
     let _ = run("reg", &["delete", r"HKLM\SOFTWARE\RegisteredApplications", "/v", PV_APP, "/f"]);
     let _ = run("reg", &["delete", &format!(r"HKLM\SOFTWARE\Classes\{PV_PROG}"), "/f"]);
     let _ = run("reg", &["delete", r"HKLM\SOFTWARE\WinRust\PhotoView", "/f"]);
-    tool_remove("photoview.exe", &pv_dir(), Some("Photo viewer"));
+    if keep_files { windows_mode::remove_link("Photo viewer")?; } else { tool_remove("photoview.exe", &pv_dir(), Some("Photo viewer")); }
     Ok(())
 }
 

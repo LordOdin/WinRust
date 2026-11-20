@@ -46,6 +46,7 @@ pub(crate) fn shells_run(script: &str) -> Result<(), String> {
 }
 
 pub(crate) fn bar_install() -> Result<(), String> {
+    windows_mode::install_controller()?;
     with_payload(&["topbar.exe", "rs-du.exe", "reshell.exe"], |d| {
         let dst = bar_dir().join("topbar.exe");
         let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
@@ -75,7 +76,9 @@ pub(crate) fn bar_install() -> Result<(), String> {
     })
 }
 
-pub(crate) fn bar_uninstall() -> Result<(), String> {
+pub(crate) fn bar_uninstall() -> Result<(), String> { bar_release(false) }
+
+pub(crate) fn bar_release(keep_files: bool) -> Result<(), String> {
     let _ = run("reg", &["delete", RUN_KEY, "/v", "topbar", "/f"]);
     let _ = run("schtasks", &["/delete", "/tn", "topbar", "/f"]);
     let _ = run("reg", &["delete", RUN_KEY, "/v", "reshell", "/f"]);
@@ -83,7 +86,9 @@ pub(crate) fn bar_uninstall() -> Result<(), String> {
     let _ = run("taskkill", &["/f", "/im", "topbar.exe"]);
     let _ = profile_uninstall();
     let r = run(bar_dir().join("topbar.exe").to_str().unwrap(), &["--restore"]); // a killed bar cannot restore the taskbar itself
-    let _ = fs::remove_dir_all(bar_dir());
-    cleaner_release(tm_dir().join("rtaskmgr-win32.exe").is_file());
+    if !keep_files {
+        let _ = fs::remove_dir_all(bar_dir());
+        cleaner_release(tm_dir().join("rtaskmgr-win32.exe").is_file());
+    }
     r
 }

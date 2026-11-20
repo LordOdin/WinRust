@@ -28,6 +28,7 @@ pub(super) enum Timing {
     WifiRowStagger,
     PinPulse,
     Caret,
+    FolderPreview,
 }
 
 pub(super) const ALL: &[Timing] = &[
@@ -54,6 +55,7 @@ pub(super) const ALL: &[Timing] = &[
     Timing::WifiRowStagger,
     Timing::PinPulse,
     Timing::Caret,
+    Timing::FolderPreview,
 ];
 
 impl Timing {
@@ -81,6 +83,7 @@ impl Timing {
             Self::WifiRowIn => t!("Появление строки сети Wi-Fi", "Wi-Fi network row animation"),
             Self::WifiRowStagger => t!("Интервал строк сетей Wi-Fi", "Delay between Wi-Fi rows"),
             Self::PinPulse => t!("Подсветка закрепления", "New pin highlight"),
+            Self::FolderPreview => t!("Задержка просмотра папки", "Folder contents preview delay"),
             Self::Caret => t!("Мигание курсора пароля Wi-Fi", "Wi-Fi password cursor blink"),
         }
     }
@@ -108,6 +111,7 @@ impl Timing {
             Self::WifiRowIn => ("WifiRowIn", 240),
             Self::WifiRowStagger => ("WifiRowStagger", 45),
             Self::PinPulse => ("PinPulse", 1200),
+            Self::FolderPreview => ("FolderPreview", 450),
             Self::Caret => ("Caret", 530),
         }
     }

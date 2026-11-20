@@ -103,7 +103,9 @@ pub(crate) fn rx_install() -> Result<(), String> {
     })
 }
 
-pub(crate) fn rx_uninstall() -> Result<(), String> {
+pub(crate) fn rx_uninstall() -> Result<(), String> { rx_release(false) }
+
+pub(crate) fn rx_release(keep_files: bool) -> Result<(), String> {
     // Windows may restart its shell again; our hooks off; then the shell back, unelevated, only if none is running
     let back = reg_dword(RX_STATE, "AutoRestartShell").unwrap_or(1);
     let r = run("reg", &["add", WINLOGON_KEY, "/v", "AutoRestartShell", "/t", "REG_DWORD", "/d", &back.to_string(), "/f"]);
@@ -112,11 +114,14 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     let _ = run("reg", &["delete", RX_SWITCH, "/f"]);
     rx_trim(false);
     for (i, k) in RX_FOLDERS.iter().enumerate() {
-        let _ = run("reg", &["delete", k, "/f"]); // only our HKCU override; the system's verbs under HKLM stay
-        let bak = rx_folders_bak(i);
-        if bak.is_file() {
-            soft(&tf!("привязка папок {k} не возвращена", "folder verbs {k} were not restored"), run("reg", &["import", &bak.display().to_string()]));
+        let command = out("reg", &["query", &format!(r"{k}\command"), "/ve"]).ok();
+        if command.is_some_and(|cmd| cmd.to_lowercase().contains("rust-explorer.exe")) {
+            run("reg", &["delete", k, "/f"])?;
+        } else if run("reg", &["query", k]).is_ok() {
+            continue; // another handler has taken ownership since install
         }
+        let bak = rx_folders_bak(i);
+        if bak.is_file() { run("reg", &["import", &bak.display().to_string()])?; }
     }
     for n in ["rs-shell.exe", "rust-explorer.exe"] {
         let _ = run("taskkill", &["/f", "/im", n]);
@@ -124,8 +129,8 @@ pub(crate) fn rx_uninstall() -> Result<(), String> {
     let _ = run("powershell", &["-NoProfile", "-Command", r#"if (-not (Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object { $_.CommandLine -match '(?i)explorer\.exe"?\s*$' })) { runas /trustlevel:0x20000 C:\Windows\explorer.exe }"#]);
     let _ = fs::remove_file(rx_lnk());
     let _ = fs::remove_file(start_lnk("Rust Explorer"));
-    let _ = fs::remove_dir_all(rx_dir());
-    if r.is_ok() {
+    if !keep_files { let _ = fs::remove_dir_all(rx_dir()); }
+    if !keep_files && r.is_ok() {
         let _ = run("reg", &["delete", RX_STATE, "/f"]);
     }
     r

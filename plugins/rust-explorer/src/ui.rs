@@ -319,7 +319,10 @@ unsafe fn redraw_row(list: HWND, i: isize) {
 /// Column header, drawn by hand: bar colour, white / dim title, a sort arrow on the sorted column. The header reports its
 /// custom draw to its parent, the list, so the hook sits on the list.
 unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id: usize, owned_font: usize) -> LRESULT {
+    if m == WM_TIMER && folder_preview::timer(h, wp) { return 0; }
+    if matches!(m, WM_MOUSELEAVE | WM_KILLFOCUS | WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_VSCROLL | WM_HSCROLL | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_KEYDOWN | WM_CONTEXTMENU | WM_CANCELMODE) { folder_preview::cancel(h); }
     if m == WM_NCDESTROY {
+        folder_preview::destroy(h);
         let result = DefSubclassProc(h, m, wp, lp);
         if owned_font != 0 { DeleteObject(owned_font as HGDIOBJ); }
         return result;
@@ -329,6 +332,7 @@ unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id:
         let mut ht: LVHITTESTINFO = std::mem::zeroed();
         ht.pt = POINT { x: (lp & 0xFFFF) as i16 as i32, y: ((lp >> 16) & 0xFFFF) as i16 as i32 };
         let i = SendMessageW(h, LVM_HITTEST, 0, &mut ht as *mut _ as isize);
+        if wp & 3 == 0 { folder_preview::moved(h, i); }
         let old = ROWHOT.replace(i);
         if old != i {
             redraw_row(h, old);

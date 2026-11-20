@@ -17,6 +17,7 @@ use std::{cell::RefCell, env, fs, os::windows::fs::MetadataExt, path::{Path, Pat
 use windows_sys::Win32::{Foundation::*, Graphics::Gdi::{BLACK_BRUSH, GetStockObject, InvalidateRect}, System::LibraryLoader::GetModuleHandleW, UI::{Controls::*, Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL}, Shell::*, WindowsAndMessaging::*}};
 
 mod desktop_menu;
+mod folder_preview;
 mod ui; // the look: palette, painted tabs / toolbar / address pill / status line, dark theme
 
 static DESKTOP: AtomicBool = AtomicBool::new(false);
@@ -317,6 +318,7 @@ fn local_search(dir: &Path, q: &str) -> (Vec<Row>, bool, bool) {
 
 /// Drops all thumbnails and invalidates in-flight ones; call whenever the rows are replaced.
 fn reset_thumbs() {
+    folder_preview::cancel(ST.with_borrow(|st| st.list));
     GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let himl = ST.with_borrow(|st| st.himl);
     unsafe { ImageList_Remove(himl as _, -1) };
@@ -375,6 +377,7 @@ fn tab_close_at(h: HWND, i: usize) {
 }
 
 fn toggle_view(h: HWND) {
+    folder_preview::cancel(ST.with_borrow(|st| st.list));
     let (list, on) = ST.with_borrow_mut(|st| { st.thumbs = !st.thumbs; (st.list, st.thumbs) });
     ui::row_height(list, !on);
     put(list, LVM_SETVIEW, if on { LV_VIEW_ICON } else { LV_VIEW_DETAILS } as usize, 0);

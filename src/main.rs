@@ -165,6 +165,9 @@ thread_local! { static HOVER: Cell<Option<usize>> = const { Cell::new(None) }; }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if let [mode] = args.as_slice() && matches!(mode.as_str(), "--windows-tools" | "--enable-winrust") {
+        std::process::exit(windows_mode::dialog(mode == "--enable-winrust"));
+    }
     if !args.is_empty() {
         std::process::exit(cli(&args));
     }

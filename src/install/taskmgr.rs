@@ -35,7 +35,9 @@ pub(crate) fn tm_install() -> Result<(), String> {
     })
 }
 
-pub(crate) fn tm_uninstall() -> Result<(), String> {
+pub(crate) fn tm_uninstall() -> Result<(), String> { tm_release(false) }
+
+pub(crate) fn tm_release(keep_files: bool) -> Result<(), String> {
     let _ = fs::remove_file(start_lnk("Task manager"));
     let _ = run("schtasks", &["/delete", "/tn", "rtaskmgr", "/f"]);
     // registry first: with the exe gone, taskmgr.exe would not start at all. Only our value: the key may hold
@@ -45,10 +47,12 @@ pub(crate) fn tm_uninstall() -> Result<(), String> {
         None if tm_installed() => run("reg", &["delete", TM_KEY, "/v", "Debugger", "/f"])?,
         None => {}
     }
-    let _ = run("reg", &["delete", TM_STATE, "/f"]);
+    if !keep_files {let _ = run("reg", &["delete", TM_STATE, "/f"]);}
     let _ = run("taskkill", &["/f", "/im", "rtaskmgr-win32.exe"]);
-    let _ = fs::remove_file(tm_dir().join("rtaskmgr-win32.exe"));
-    cleaner_release(bar_dir().join("topbar.exe").is_file());
+    if !keep_files {
+        let _ = fs::remove_file(tm_dir().join("rtaskmgr-win32.exe"));
+        cleaner_release(bar_dir().join("topbar.exe").is_file());
+    }
     Ok(())
 }
 

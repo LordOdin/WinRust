@@ -526,7 +526,7 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 SetWindowTextW(dlg, wide("Настройки WinRust").as_ptr());
                 for (id, text) in [
                     (1001, "Тип"),
-                    (127, "Палитра"), (145, "Шрифт"), (147, "Углы"), (149, "Цвета для"), (151, "По умолчанию"), (152, "Режим"),
+                    (154, "Отключить WinRust..."), (127, "Палитра"), (145, "Шрифт"), (147, "Углы"), (149, "Цвета для"), (151, "По умолчанию"), (152, "Режим"),
                     (130, "Изменить цвет..."),
                     (132, "Край"),
                     (1002, "Высота панели"),
@@ -705,6 +705,15 @@ unsafe extern "system" fn dialog_proc(dlg: HWND, msg: u32, wp: WPARAM, lp: LPARA
                                 ..preferences()
                             },
                         );
+                    }
+                }
+                154 => {
+                    let path = std::env::current_exe().ok()
+                        .and_then(|p| p.parent()?.parent().map(|d| d.join(r"WinRust\WinRust-setup.exe")));
+                    let result = path.filter(|p| p.is_file()).map(|p| ShellExecuteW(dlg, windows_sys::w!("runas"), wide(&p.to_string_lossy()).as_ptr(),
+                        windows_sys::w!("--windows-tools"), null(), SW_SHOWNORMAL) as isize);
+                    if result.is_none_or(|v| v <= 32) {
+                        MessageBoxW(dlg, wide(t!("Не удалось запустить WinRust Setup.", "Could not start WinRust Setup.")).as_ptr(), wide("WinRust").as_ptr(), MB_ICONERROR);
                     }
                 }
                 TILE => {

@@ -7,6 +7,7 @@ mod session;
 mod taskmgr;
 mod tools;
 mod topbar;
+pub(crate) mod windows_mode;
 pub(crate) use {explorer::*, search::*, session::*, taskmgr::*, tools::*, topbar::*};
 
 pub(crate) fn out(prog: &str, args: &[&str]) -> Result<String, String> {

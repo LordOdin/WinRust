@@ -4,6 +4,10 @@
 //! it waits for processes, a hook or UI thread must not. Shared by Win+I (reshell) and the topbar's menus.
 use std::{os::windows::process::CommandExt, process::{Command, Stdio}};
 
+/// Default dwell time shared by the Explorer popup and its Timing setting.
+pub const FOLDER_PREVIEW_DELAY_MS: u32 = 200;
+pub const FOLDER_PREVIEW_DISMISS_MS: u32 = 300;
+
 const PS: &str = r#"
 Add-Type -Namespace W -Name U -MemberDefinition '[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr GetShellWindow(); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint p); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr FindWindowEx(System.IntPtr p, System.IntPtr a, string c, string t); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr GetWindow(System.IntPtr h, uint c); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr h); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool ShowWindow(System.IntPtr h, int c); [System.Runtime.InteropServices.DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, System.UIntPtr e);'
 function ExplorerShell { $h=[W.U]::GetShellWindow(); if($h -eq [IntPtr]::Zero){return $false}; $p=0; [void][W.U]::GetWindowThreadProcessId($h,[ref]$p); (Get-Process -Id $p -ErrorAction SilentlyContinue).Name -eq 'explorer' }

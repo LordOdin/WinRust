@@ -320,7 +320,7 @@ unsafe fn redraw_row(list: HWND, i: isize) {
 /// custom draw to its parent, the list, so the hook sits on the list.
 unsafe extern "system" fn list_sub(h: HWND, m: u32, wp: WPARAM, lp: LPARAM, _id: usize, owned_font: usize) -> LRESULT {
     if m == WM_TIMER && folder_preview::timer(h, wp) { return 0; }
-    if matches!(m, WM_MOUSELEAVE | WM_KILLFOCUS | WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_VSCROLL | WM_HSCROLL | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_KEYDOWN | WM_CONTEXTMENU | WM_CANCELMODE) { folder_preview::cancel(h); }
+    if matches!(m, WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_VSCROLL | WM_HSCROLL | WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_KEYDOWN | WM_CONTEXTMENU) { folder_preview::cancel(h); }
     if m == WM_NCDESTROY {
         folder_preview::destroy(h);
         let result = DefSubclassProc(h, m, wp, lp);

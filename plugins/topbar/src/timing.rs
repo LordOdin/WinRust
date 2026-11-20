@@ -29,6 +29,7 @@ pub(super) enum Timing {
     PinPulse,
     Caret,
     FolderPreview,
+    FolderPreviewDismiss,
 }
 
 pub(super) const ALL: &[Timing] = &[
@@ -56,6 +57,7 @@ pub(super) const ALL: &[Timing] = &[
     Timing::PinPulse,
     Timing::Caret,
     Timing::FolderPreview,
+    Timing::FolderPreviewDismiss,
 ];
 
 impl Timing {
@@ -83,6 +85,7 @@ impl Timing {
             Self::WifiRowIn => t!("Появление строки сети Wi-Fi", "Wi-Fi network row animation"),
             Self::WifiRowStagger => t!("Интервал строк сетей Wi-Fi", "Delay between Wi-Fi rows"),
             Self::PinPulse => t!("Подсветка закрепления", "New pin highlight"),
+            Self::FolderPreviewDismiss => t!("Задержка закрытия окна папки", "Folder browser dismissal delay"),
             Self::FolderPreview => t!("Задержка просмотра папки", "Folder contents preview delay"),
             Self::Caret => t!("Мигание курсора пароля Wi-Fi", "Wi-Fi password cursor blink"),
         }
@@ -111,7 +114,8 @@ impl Timing {
             Self::WifiRowIn => ("WifiRowIn", 240),
             Self::WifiRowStagger => ("WifiRowStagger", 45),
             Self::PinPulse => ("PinPulse", 1200),
-            Self::FolderPreview => ("FolderPreview", 450),
+            Self::FolderPreviewDismiss => ("FolderPreviewDismiss", winrust_common::settings::FOLDER_PREVIEW_DISMISS_MS),
+            Self::FolderPreview => ("FolderPreview", winrust_common::settings::FOLDER_PREVIEW_DELAY_MS),
             Self::Caret => ("Caret", 530),
         }
     }

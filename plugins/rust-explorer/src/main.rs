@@ -1238,6 +1238,7 @@ fn main() {
         ui::dark_mode();
         InitCommonControlsEx(&INITCOMMONCONTROLSEX { dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: ICC_LISTVIEW_CLASSES });
         let inst = GetModuleHandleW(ptr::null());
+        folder_preview::register(inst);
         let cls = w("RustExplorer");
         let desktop = env::args().nth(1).as_deref() == Some("--desktop");
         // desktop without a wallpaper file shows black, not window white
@@ -1272,6 +1273,7 @@ fn main() {
         }
         let mut msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0 as _, 0, 0) > 0 {
+            if folder_preview::key(&msg) { continue; }
             // Alt+Left / Right / Up / Enter arrive as WM_SYSKEYDOWN at the list, which never reports them: handle them here
             if msg.message == WM_SYSKEYDOWN && !desk() {
                 let act = match msg.wParam { 0x25 => 1, 0x27 => 2, 0x0D => 3, 0x26 => 4, _ => 0 };
